@@ -1,0 +1,20 @@
+{
+  "name": "1球速報スコア",
+  "short_name": "1球速報",
+  "description": "高校・高専野球向けの完全オフライン対応1球速報スコア管理アプリ",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f7fa",
+  "theme_color": "#176b87",
+  "orientation": "any",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
