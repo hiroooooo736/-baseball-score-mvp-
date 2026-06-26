@@ -1271,6 +1271,15 @@ function liveHtml() {
 
 function runningScoreHtml(game) {
   const innings = Array.from({ length: 9 }, (_, index) => index + 1);
+  const topRowTeamType = game.battingOrder === "top" ? "self" : "opponent";
+  const bottomRowTeamType = topRowTeamType === "self" ? "opponent" : "self";
+  const scoreRow = (teamType) => `
+    <tr>
+      <th>${teamType === "self" ? "自" : "相"}</th>
+      ${innings.map((inning) => scoreCell(game, teamType, inning)).join("")}
+      <td class="total">${teamType === "self" ? game.selfScore : game.opponentScore}</td>
+    </tr>
+  `;
   return `
     <div class="scoreboard-title">ランニングスコア</div>
     <div class="scoreboard-scroll">
@@ -1279,16 +1288,8 @@ function runningScoreHtml(game) {
           <tr><th></th>${innings.map((inning) => `<th>${inning}</th>`).join("")}<th>計</th></tr>
         </thead>
         <tbody>
-          <tr>
-            <th>自</th>
-            ${innings.map((inning) => scoreCell(game, "self", inning)).join("")}
-            <td class="total">${game.selfScore}</td>
-          </tr>
-          <tr>
-            <th>相</th>
-            ${innings.map((inning) => scoreCell(game, "opponent", inning)).join("")}
-            <td class="total">${game.opponentScore}</td>
-          </tr>
+          ${scoreRow(topRowTeamType)}
+          ${scoreRow(bottomRowTeamType)}
         </tbody>
       </table>
     </div>
@@ -1556,8 +1557,8 @@ function battingStatsHtml(game) {
       <h3>自チーム打撃集計</h3>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>選手</th><th>打席</th><th>打数</th><th>安打</th><th>単打</th><th>二塁打</th><th>三塁打</th><th>本塁打</th><th>三振</th><th>四球</th><th>死球</th><th>犠打</th><th>併殺</th><th>失策出塁</th><th>盗塁</th><th>盗塁死</th><th>打点</th><th>得点</th><th>打率</th><th>出塁率</th></tr></thead>
-          <tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.name)}</td><td>${row.pa}</td><td>${row.ab}</td><td>${row.hits}</td><td>${row.single}</td><td>${row.double}</td><td>${row.triple}</td><td>${row.homerun}</td><td>${row.strikeouts}</td><td>${row.walks}</td><td>${row.hbp}</td><td>${row.sacrifice}</td><td>${row.doubleplay}</td><td>${row.errorReach}</td><td>${row.steals}</td><td>${row.caughtStealing}</td><td>${row.rbi}</td><td>${row.runs}</td><td>${formatRate(row.avg)}</td><td>${formatRate(row.obp)}</td></tr>`).join("")}</tbody>
+          <thead><tr><th>選手</th><th>打席</th><th>打数</th><th>安打</th><th>単打</th><th>二塁打</th><th>三塁打</th><th>本塁打</th><th>三振</th><th>四球</th><th>死球</th><th>犠打</th><th>併殺</th><th>失策出塁</th><th>盗塁</th><th>盗塁死</th><th>打点</th><th>得点</th><th>打率</th><th>出塁率</th><th>OPS</th><th>コンタクト率</th></tr></thead>
+          <tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.name)}</td><td>${row.pa}</td><td>${row.ab}</td><td>${row.hits}</td><td>${row.single}</td><td>${row.double}</td><td>${row.triple}</td><td>${row.homerun}</td><td>${row.strikeouts}</td><td>${row.walks}</td><td>${row.hbp}</td><td>${row.sacrifice}</td><td>${row.doubleplay}</td><td>${row.errorReach}</td><td>${row.steals}</td><td>${row.caughtStealing}</td><td>${row.rbi}</td><td>${row.runs}</td><td>${formatRate(row.avg)}</td><td>${formatRate(row.obp)}</td><td>${formatRate(row.ops)}</td><td>${formatPercent(row.contactRate)}</td></tr>`).join("")}</tbody>
         </table>
       </div>
     </section>
@@ -1571,8 +1572,8 @@ function pitchingStatsHtml(game) {
       <h3>自チーム投手集計</h3>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>投手</th><th>投球数</th><th>見逃し</th><th>空振り</th><th>ボール</th><th>ファール</th><th>インプレー</th><th>奪三振</th><th>与四球</th><th>与死球</th><th>被安打</th><th>被本塁打</th><th>暴投</th><th>ボーク</th><th>失点</th><th>自責点</th></tr></thead>
-          <tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.name)}</td><td>${row.pitchCount}</td><td>${row.called}</td><td>${row.swinging}</td><td>${row.ball}</td><td>${row.foul}</td><td>${row.inplay}</td><td>${row.strikeouts}</td><td>${row.walks}</td><td>${row.hbp}</td><td>${row.hits}</td><td>${row.homerun}</td><td>${row.wildPitch}</td><td>${row.balk}</td><td>${row.runs}</td><td>${row.earnedRuns}</td></tr>`).join("")}</tbody>
+          <thead><tr><th>投手</th><th>投球数</th><th>見逃し</th><th>空振り</th><th>ボール</th><th>ストライク率</th><th>初球ストライク率</th><th>奪三振</th><th>与四球</th><th>与死球</th><th>被安打</th><th>被本塁打</th><th>暴投</th><th>ボーク</th><th>失点</th><th>自責点</th></tr></thead>
+          <tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.name)}</td><td>${row.pitchCount}</td><td>${row.called}</td><td>${row.swinging}</td><td>${row.ball}</td><td>${formatPercent(row.strikeRate)}</td><td>${formatPercent(row.firstPitchStrikeRate)}</td><td>${row.strikeouts}</td><td>${row.walks}</td><td>${row.hbp}</td><td>${row.hits}</td><td>${row.homerun}</td><td>${row.wildPitch}</td><td>${row.balk}</td><td>${row.runs}</td><td>${row.earnedRuns}</td></tr>`).join("")}</tbody>
         </table>
       </div>
     </section>
@@ -1605,12 +1606,20 @@ function battingRows(game) {
       caughtStealing: events.filter((event) => event.eventType === "caught_stealing").length,
       rbi: sum(results, "rbi"),
       runs: sum(results, "runsScored") + sum(events.filter((event) => event.eventType === "run_scored"), "runsAdded"),
+      totalBases: 0,
       avg: 0,
       obp: 0,
+      slg: 0,
+      ops: 0,
+      contactRate: 0,
     };
+    row.totalBases = row.single + row.double * 2 + row.triple * 3 + row.homerun * 4;
     row.avg = row.ab ? row.hits / row.ab : null;
     const obpDenominator = row.ab + row.walks + row.hbp;
     row.obp = obpDenominator ? (row.hits + row.walks + row.hbp) / obpDenominator : null;
+    row.slg = row.ab ? row.totalBases / row.ab : null;
+    row.ops = row.obp !== null && row.slg !== null ? row.obp + row.slg : null;
+    row.contactRate = row.pa ? (row.pa - row.strikeouts) / row.pa : null;
     return row;
   });
 }
@@ -1628,14 +1637,23 @@ function pitchingRows(game) {
     const pitches = state.pitches.filter((pitch) => pitch.gameId === game.id && pitch.pitcherId === pitcherId);
     const results = state.battingResults.filter((result) => result.gameId === game.id && result.battingTeamType === "opponent" && result.pitcherId === pitcherId);
     const events = state.gameEvents.filter((event) => event.gameId === game.id && event.battingTeamType === "opponent" && event.pitcherId === pitcherId);
+    const plateAppearances = state.plateAppearances.filter((pa) => pa.gameId === game.id && pa.battingTeamType === "opponent" && pa.pitcherId === pitcherId && pa.result);
+    const strikePitches = pitches.filter(isStrikePitch);
+    const ballPitches = pitches.filter(isBallPitch);
+    const firstPitchStrikeCount = plateAppearances.filter((pa) => {
+      const firstPitch = state.pitches
+        .filter((pitch) => pitch.plateAppearanceId === pa.id)
+        .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))[0];
+      return firstPitch ? isStrikePitch(firstPitch) : false;
+    }).length;
     return {
       name: playerName(pitcherId, "未設定"),
       pitchCount: pitches.length,
       called: pitches.filter((pitch) => pitch.type === "called").length,
       swinging: pitches.filter((pitch) => pitch.type === "swinging").length,
-      ball: pitches.filter((pitch) => pitch.type === "ball").length,
-      foul: pitches.filter((pitch) => pitch.type === "foul").length,
-      inplay: pitches.filter((pitch) => pitch.type === "inplay").length,
+      ball: ballPitches.length,
+      strikeRate: pitches.length ? strikePitches.length / pitches.length : null,
+      firstPitchStrikeRate: plateAppearances.length ? firstPitchStrikeCount / plateAppearances.length : null,
       strikeouts: results.filter((result) => result.type === "strikeout").length,
       walks: results.filter((result) => result.type === "walk").length,
       hbp: results.filter((result) => result.type === "hbp").length,
@@ -1649,6 +1667,17 @@ function pitchingRows(game) {
   });
 }
 
+function isStrikePitch(pitch) {
+  if (["called", "swinging", "foul", "inplay"].includes(pitch.type)) return true;
+  if (pitch.type === "result") return !["walk", "hbp"].includes(pitch.resultType);
+  return false;
+}
+
+function isBallPitch(pitch) {
+  if (pitch.type === "ball") return true;
+  return pitch.type === "result" && ["walk", "hbp"].includes(pitch.resultType);
+}
+
 function sum(items, key) {
   return items.reduce((total, item) => total + Number(item[key] || 0), 0);
 }
@@ -1656,6 +1685,11 @@ function sum(items, key) {
 function formatRate(value) {
   if (value === null || Number.isNaN(value)) return "-";
   return value.toFixed(3).replace(/^0/, "");
+}
+
+function formatPercent(value) {
+  if (value === null || Number.isNaN(value)) return "-";
+  return `${Math.round(value * 1000) / 10}%`;
 }
 
 function bindEvents() {
