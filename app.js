@@ -6,6 +6,8 @@ const DB_NAME = "baseball-score-offline-db";
 const DB_VERSION = 1;
 const STATE_STORE = "app_state";
 const STATE_RECORD_ID = "main";
+const ACTION_HISTORY_LIMIT = 12;
+const LEGACY_UNDO_LIMIT = 5;
 
 const pitchTypes = {
   called: "見逃しストライク",
@@ -71,13 +73,29 @@ const initialState = {
   statsTab: "batting",
   editingPlayerId: null,
   pendingRuns: 0,
+  lastActionType: "",
+  lastError: "",
+  lastDbError: "",
+  lastSavedAt: "",
 };
 
 let state = structuredClone(initialState);
 
 async function loadState() {
-  const persisted = await readStateFromIndexedDb();
-  const raw = persisted ? JSON.stringify(persisted) : localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
+  let persisted = null;
+  try {
+    persisted = await readStateFromIndexedDb();
+  } catch (error) {
+    console.warn("IndexedDBからの読み込みに失敗しました", error);
+  }
+  let raw = persisted ? JSON.stringify(persisted) : "";
+  if (!raw) {
+    try {
+      raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
+    } catch (error) {
+      console.warn("localStorageからの読み込みに失敗しました", error);
+    }
+  }
   if (!raw) return structuredClone(initialState);
   try {
     return migrateState({ ...structuredClone(initialState), ...JSON.parse(raw) });
@@ -94,6 +112,10 @@ function migrateState(source) {
   migrated.undoStack = migrated.undoStack || [];
   migrated.gameActionHistory = migrated.gameActionHistory || [];
   migrated.statsTab = migrated.statsTab || "batting";
+  migrated.lastActionType = migrated.lastActionType || "";
+  migrated.lastError = migrated.lastError || "";
+  migrated.lastDbError = migrated.lastDbError || "";
+  migrated.lastSavedAt = migrated.lastSavedAt || "";
 
   migrated.gameLineups = migrated.gameLineups.map((lineup) => ({
     ...lineup,
@@ -160,18 +182,67 @@ function migrateState(source) {
     };
   });
 
+  migrated.undoStack = migrated.undoStack.slice(-LEGACY_UNDO_LIMIT);
+  migrated.gameActionHistory = migrated.gameActionHistory.slice(-ACTION_HISTORY_LIMIT).map((action) => ({
+    ...action,
+    beforeState: action.beforeState ? stateSnapshot(action.beforeState) : null,
+  }));
+
+  migrated.games = migrated.games.map((game) => repairGameState(migrated, game));
+
   return migrated;
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  writeStateToIndexedDb(state).catch((error) => console.warn("IndexedDBへの保存に失敗しました", error));
+  const now = new Date().toISOString();
+  state.lastSavedAt = now;
+  let localStorageError = null;
+
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(compactStateForLocalStorage(state)));
+  } catch (error) {
+    localStorageError = error;
+    state.lastError = `端末内の予備保存に失敗しました: ${errorMessage(error)}`;
+    console.warn("localStorageへの保存に失敗しました", error);
+  }
+
+  writeStateToIndexedDb(compactStateForIndexedDb(state)).then(() => {
+    state.lastDbError = "";
+  }).catch((error) => {
+    state.lastDbError = errorMessage(error);
+    state.lastError = `IndexedDBへの保存に失敗しました: ${state.lastDbError}`;
+    console.warn("IndexedDBへの保存に失敗しました", error);
+    try {
+      render();
+    } catch (renderError) {
+      console.error(renderError);
+    }
+  });
+
+  return { localStorageError };
+}
+
+function compactStateForLocalStorage(source) {
+  const snapshot = structuredClone(source);
+  snapshot.gameActionHistory = [];
+  snapshot.undoStack = [];
+  return snapshot;
+}
+
+function compactStateForIndexedDb(source) {
+  const snapshot = structuredClone(source);
+  snapshot.undoStack = (snapshot.undoStack || []).slice(-LEGACY_UNDO_LIMIT);
+  snapshot.gameActionHistory = (snapshot.gameActionHistory || []).slice(-ACTION_HISTORY_LIMIT).map((action) => ({
+    ...action,
+    beforeState: action.beforeState ? stateSnapshot(action.beforeState) : null,
+  }));
+  return snapshot;
 }
 
 function openAppDb() {
-  if (!("indexedDB" in window)) return Promise.resolve(null);
+  if (!window.indexedDB) return Promise.resolve(null);
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const request = window.indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STATE_STORE)) db.createObjectStore(STATE_STORE, { keyPath: "id" });
@@ -234,8 +305,28 @@ function uid(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
-function setState(updater) {
-  state = updater(state);
+function setState(updater, fallbackActionType = "state_update") {
+  const previousState = state;
+  let nextState;
+  try {
+    nextState = updater(previousState);
+    nextState = repairState(nextState);
+    if (!nextState.lastActionType || nextState.lastActionType === previousState.lastActionType) {
+      nextState.lastActionType = fallbackActionType;
+    }
+    if (!nextState.lastError || nextState.lastError === previousState.lastError) nextState.lastError = "";
+    state = nextState;
+  } catch (error) {
+    console.error(error);
+    state = {
+      ...previousState,
+      lastActionType: fallbackActionType,
+      lastError: errorMessage(error),
+    };
+    render();
+    return;
+  }
+
   saveState();
   render();
 }
@@ -243,11 +334,45 @@ function setState(updater) {
 function stateSnapshot(source) {
   const snapshot = structuredClone(source);
   snapshot.gameActionHistory = [];
+  snapshot.undoStack = [];
+  snapshot.lastError = "";
+  snapshot.lastDbError = "";
   return snapshot;
+}
+
+function repairState(source) {
+  const repaired = { ...source };
+  repaired.games = (repaired.games || []).map((game) => repairGameState(repaired, game));
+  repaired.gameActionHistory = (repaired.gameActionHistory || []).slice(-ACTION_HISTORY_LIMIT);
+  repaired.undoStack = (repaired.undoStack || []).slice(-LEGACY_UNDO_LIMIT);
+  return repaired;
+}
+
+function repairGameState(source, game) {
+  const repaired = { ...game };
+  repaired.inning = Math.max(1, Number(repaired.inning || 1));
+  repaired.half = repaired.half === "bottom" ? "bottom" : "top";
+  repaired.outs = Math.max(0, Math.min(2, Number(repaired.outs || 0)));
+  repaired.balls = Math.max(0, Math.min(3, Number(repaired.balls || 0)));
+  repaired.strikes = Math.max(0, Math.min(2, Number(repaired.strikes || 0)));
+  const currentPa = source.plateAppearances?.find((pa) => pa.id === repaired.currentPlateAppearanceId);
+  if (!currentPa || currentPa.result) repaired.currentPlateAppearanceId = null;
+  const currentBatterOrder = normalizeOrder(repaired.currentBatterOrder || 1);
+  repaired.currentBatterOrder = currentBatterOrder;
+  const starter = source.gameLineups?.find((lineup) => lineup.gameId === repaired.id && lineup.isStarter && Number(lineup.battingOrder) === currentBatterOrder);
+  if (currentSide(repaired) === "self" && starter) repaired.currentBatterId = starter.currentPlayerId || starter.playerId;
+  repaired.currentDefensivePitcherId = repaired.half === "top" ? repaired.currentHomePitcherId || null : repaired.currentAwayPitcherId || null;
+  return repaired;
+}
+
+function errorMessage(error) {
+  if (!error) return "不明なエラー";
+  return error.message || String(error);
 }
 
 function pushActionHistory(draft, beforeState, actionType, gameId, related = {}) {
   draft.gameActionHistory = draft.gameActionHistory || [];
+  draft.lastActionType = actionType;
   draft.gameActionHistory.push({
     id: uid("action"),
     gameId,
@@ -257,7 +382,7 @@ function pushActionHistory(draft, beforeState, actionType, gameId, related = {})
     relatedPlateAppearanceId: related.relatedPlateAppearanceId || null,
     createdAt: new Date().toISOString(),
   });
-  if (draft.gameActionHistory.length > 50) draft.gameActionHistory.shift();
+  if (draft.gameActionHistory.length > ACTION_HISTORY_LIMIT) draft.gameActionHistory.shift();
 }
 
 function currentGame() {
@@ -357,10 +482,15 @@ function ensurePlateAppearance(draft, game) {
 function recordPitch(type) {
   const game = currentGame();
   if (!game) return;
+  if (!pitchTypes[type]) {
+    setState((prev) => ({ ...prev, lastError: `未対応の投球種別です: ${type}` }), "pitch_input_error");
+    return;
+  }
 
   setState((prev) => {
     const draft = structuredClone(prev);
     const targetGame = draft.games.find((item) => item.id === game.id);
+    if (!targetGame) throw new Error("入力対象の試合が見つかりません。");
     pushActionHistory(draft, prev, "pitch_input", targetGame.id);
     const pa = ensurePlateAppearance(draft, targetGame);
     const before = { balls: targetGame.balls, strikes: targetGame.strikes };
@@ -400,7 +530,7 @@ function recordPitch(type) {
 
     draft.screen = "live";
     return draft;
-  });
+  }, "pitch_input");
 }
 
 function submitResult(type) {
@@ -408,10 +538,15 @@ function submitResult(type) {
   const runs = Math.max(0, Number(runsInput?.value || 0));
   const game = currentGame();
   if (!game) return;
+  if (!resultTypes[type]) {
+    setState((prev) => ({ ...prev, lastError: `未対応の打席結果です: ${type}` }), "plate_appearance_result_error");
+    return;
+  }
 
   setState((prev) => {
     const draft = structuredClone(prev);
     const targetGame = draft.games.find((item) => item.id === game.id);
+    if (!targetGame) throw new Error("入力対象の試合が見つかりません。");
     pushActionHistory(draft, prev, "plate_appearance_result", targetGame.id);
     const pa = ensurePlateAppearance(draft, targetGame);
     const before = { balls: targetGame.balls, strikes: targetGame.strikes };
@@ -432,7 +567,7 @@ function submitResult(type) {
     draft.pendingRuns = 0;
     draft.screen = "live";
     return draft;
-  });
+  }, "plate_appearance_result");
 }
 
 function finishPlateAppearance(draft, game, type, runs) {
@@ -758,9 +893,11 @@ function toggleRunner(base) {
   setState((prev) => {
     const draft = structuredClone(prev);
     const targetGame = draft.games.find((item) => item.id === game.id);
+    if (!targetGame) throw new Error("入力対象の試合が見つかりません。");
     const before = Boolean(targetGame[key]);
     const runners = runnerSnapshot(targetGame);
     runners[key] = !before;
+    pushActionHistory(draft, prev, "game_event", targetGame.id);
     createGameEvent(draft, targetGame, {
       eventType: "manual_base_change",
       fromBase: base,
@@ -770,7 +907,7 @@ function toggleRunner(base) {
     });
     draft.screen = "live";
     return draft;
-  });
+  }, "manual_base_change");
 }
 
 function addManualRun() {
@@ -779,6 +916,7 @@ function addManualRun() {
   setState((prev) => {
     const draft = structuredClone(prev);
     const targetGame = draft.games.find((item) => item.id === game.id);
+    if (!targetGame) throw new Error("入力対象の試合が見つかりません。");
     pushActionHistory(draft, prev, "game_event", targetGame.id);
     createGameEvent(draft, targetGame, {
       eventType: "run_scored",
@@ -787,7 +925,7 @@ function addManualRun() {
     });
     draft.screen = "live";
     return draft;
-  });
+  }, "game_event");
 }
 
 function recordSituationEvent() {
@@ -804,6 +942,8 @@ function recordSituationEvent() {
   setState((prev) => {
     const draft = structuredClone(prev);
     const targetGame = draft.games.find((item) => item.id === game.id);
+    if (!targetGame) throw new Error("入力対象の試合が見つかりません。");
+    pushActionHistory(draft, prev, "game_event", targetGame.id);
     createGameEvent(draft, targetGame, {
       eventType,
       outsAdded,
@@ -812,7 +952,7 @@ function recordSituationEvent() {
     });
     draft.screen = "live";
     return draft;
-  });
+  }, "game_event");
 }
 
 function capitalizeBase(base) {
@@ -834,9 +974,11 @@ function undoLastAction() {
     const action = history[actionIndex];
     const restored = structuredClone(action.beforeState);
     restored.gameActionHistory = history.slice(0, actionIndex);
+    restored.lastActionType = "undo";
+    restored.lastError = "";
     restored.screen = "live";
     return restored;
-  });
+  }, "undo");
 }
 
 function substitutePinchHitter() {
@@ -850,6 +992,7 @@ function substitutePinchHitter() {
   setState((prev) => {
     const draft = structuredClone(prev);
     const targetGame = draft.games.find((item) => item.id === game.id);
+    if (!targetGame) throw new Error("入力対象の試合が見つかりません。");
     const order = normalizeOrder(targetGame.currentBatterOrder);
     const lineup = starterForOrder(draft, targetGame.id, order);
     const outgoingPlayerId = lineup?.currentPlayerId || lineup?.playerId || targetGame.currentBatterId || null;
@@ -886,7 +1029,7 @@ function substitutePinchHitter() {
 
     draft.screen = "live";
     return draft;
-  });
+  }, "substitution_pinch_hitter");
 }
 
 function substitutePitcher() {
@@ -908,6 +1051,7 @@ function substitutePitcher() {
   setState((prev) => {
     const draft = structuredClone(prev);
     const targetGame = draft.games.find((item) => item.id === game.id);
+    if (!targetGame) throw new Error("入力対象の試合が見つかりません。");
     const defensive = defensivePitcherInfo(targetGame, draft);
     const isHomeDefense = defensive.defensiveHalf === "home";
     const newPitcherId = defensive.isSelfPitcher ? newSelfPitcherId : null;
@@ -953,7 +1097,7 @@ function substitutePitcher() {
 
     draft.screen = "live";
     return draft;
-  });
+  }, "substitution_pitcher");
 }
 
 function exportBackup() {
@@ -983,6 +1127,8 @@ function importBackup(file) {
       const parsed = JSON.parse(String(reader.result || "{}"));
       const importedState = parsed.state || parsed;
       state = migrateState({ ...structuredClone(initialState), ...importedState });
+      state.lastActionType = "import_backup";
+      state.lastError = "";
       saveState();
       render();
       alert("バックアップを復元しました。");
@@ -1014,13 +1160,23 @@ function render() {
           </nav>
         </div>
       </header>
-      <main class="main">${screenHtml()}</main>
+      <main class="main">${diagnosticBannerHtml()}${screenHtml()}</main>
     </div>
   `;
   bindEvents();
 }
 function tab(screen, label) {
   return `<button class="tab ${state.screen === screen ? "active" : ""}" data-screen="${screen}">${label}</button>`;
+}
+
+function diagnosticBannerHtml() {
+  if (!state.lastError && !state.lastDbError) return "";
+  return `
+    <section class="diagnostic-banner">
+      <strong>入力・保存の確認が必要です</strong>
+      <span>${escapeHtml(state.lastError || state.lastDbError)}</span>
+    </section>
+  `;
 }
 
 function screenHtml() {
@@ -1265,7 +1421,37 @@ function liveHtml() {
           <button class="secondary" data-undo-action="1">直前の入力を取り消す</button>
         </div>
       </section>
+      ${debugStateHtml(game)}
     </div>
+  `;
+}
+
+function debugStateHtml(game) {
+  const currentPa = state.plateAppearances.find((pa) => pa.id === game.currentPlateAppearanceId);
+  const recentPitches = state.pitches.filter((pitch) => pitch.gameId === game.id).slice(-5);
+  const recentPas = state.plateAppearances.filter((pa) => pa.gameId === game.id).slice(-5);
+  const recentEvents = state.gameEvents.filter((event) => event.gameId === game.id).slice(-5);
+  const batter = currentBatter(game);
+  const pitcher = defensivePitcherInfo(game);
+  const stateSize = JSON.stringify(compactStateForLocalStorage(state)).length;
+
+  return `
+    <details class="debug-panel">
+      <summary>デバッグ表示</summary>
+      <div class="debug-grid">
+        <span>最後の操作</span><strong>${escapeHtml(state.lastActionType || "-")}</strong>
+        <span>最後の保存</span><strong>${state.lastSavedAt ? escapeHtml(new Date(state.lastSavedAt).toLocaleString("ja-JP")) : "-"}</strong>
+        <span>エラー</span><strong>${escapeHtml(state.lastError || "-")}</strong>
+        <span>DBエラー</span><strong>${escapeHtml(state.lastDbError || "-")}</strong>
+        <span>試合状態</span><strong>${game.inning}回${halfLabel(game.half)} / ${game.outs}死 / B${game.balls}-S${game.strikes}</strong>
+        <span>打順・打者</span><strong>${currentSide(game) === "self" ? `${normalizeOrder(game.currentBatterOrder)}番 ${batter ? escapeHtml(batter.name) : "未設定"}` : "相手打者"}</strong>
+        <span>投手</span><strong>${escapeHtml(pitcher.name)}</strong>
+        <span>現在打席ID</span><strong>${escapeHtml(currentPa?.id || "-")}</strong>
+        <span>直近件数</span><strong>投球 ${recentPitches.length} / 打席 ${recentPas.length} / イベント ${recentEvents.length}</strong>
+        <span>Undo履歴</span><strong>${(state.gameActionHistory || []).length}件</strong>
+        <span>保存サイズ目安</span><strong>${Math.round(stateSize / 1024)} KB</strong>
+      </div>
+    </details>
   `;
 }
 

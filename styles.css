@@ -651,6 +651,50 @@ th {
   padding: 10px;
 }
 
+.diagnostic-banner {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #78350f;
+}
+
+.diagnostic-banner span {
+  font-size: 14px;
+}
+
+.debug-panel {
+  grid-column: 1 / -1;
+  border: 1px dashed #94a3b8;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.debug-panel summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.debug-grid {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.45fr) minmax(160px, 1fr);
+  gap: 8px 12px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.debug-grid span {
+  color: #64748b;
+}
+
+.debug-grid strong {
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 760px) {
   .tabs {
     grid-template-columns: repeat(6, minmax(92px, 1fr));
@@ -724,5 +768,9 @@ th {
 
   button {
     width: 100%;
+  }
+
+  .debug-grid {
+    grid-template-columns: 1fr;
   }
 }
