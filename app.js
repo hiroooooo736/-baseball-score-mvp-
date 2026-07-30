@@ -369,7 +369,7 @@ function repairGameState(source, game) {
   repaired.status = repaired.status || "in_progress";
   repaired.endedAt = repaired.endedAt || null;
   const starter = source.gameLineups?.find((lineup) => lineup.gameId === repaired.id && lineup.isStarter && Number(lineup.battingOrder) === currentBatterOrder);
-  if (currentSide(repaired) === "self" && starter) repaired.currentBatterId = starter.currentPlayerId || starter.playerId;
+  if (currentSide(repaired) === "self" && starter && !repaired.currentBatterId) repaired.currentBatterId = starter.currentPlayerId || starter.playerId;
   repaired.currentDefensivePitcherId = repaired.half === "top" ? repaired.currentHomePitcherId || null : repaired.currentAwayPitcherId || null;
   return repaired;
 }
@@ -434,6 +434,10 @@ function starterForOrder(source, gameId, order) {
 
 function currentBatter(game, source = state) {
   if (currentSide(game) === "opponent") return null;
+  if (game.currentBatterId) {
+    const current = source.players.find((player) => player.id === game.currentBatterId);
+    if (current) return current;
+  }
   const starter = starterForOrder(source, game.id, normalizeOrder(game.currentBatterOrder));
   if (starter) return source.players.find((player) => player.id === (starter.currentPlayerId || starter.playerId)) || null;
 
@@ -610,8 +614,8 @@ function finishPlateAppearance(draft, game, type, runs) {
   const pa = ensurePlateAppearance(draft, game);
   const meta = resultTypes[type];
   const battingTeamType = pa.battingTeamType || pa.battingSide;
-  const rbi = battingTeamType === "self" ? runs : 0;
-  const runsScored = battingTeamType === "self" ? runs : 0;
+  const rbi = runs;
+  const runsScored = runs;
   const earnedRuns = battingTeamType === "opponent" ? runs : 0;
   const outsAdded = Math.min(meta.outs ?? (meta.out ? 1 : 0), Math.max(0, 3 - game.outs));
   const result = {
@@ -1189,6 +1193,140 @@ function substitutePitcher() {
   }, "substitution_pitcher");
 }
 
+function saveOrderEdit(event) {
+  event.preventDefault();
+  const game = currentGame();
+  if (!game) return;
+  if (isGameEnded(game)) {
+    setState((prev) => ({ ...prev, lastError: "終了した試合のオーダーは編集できません。" }), "order_edit_blocked");
+    return;
+  }
+  const data = new FormData(event.currentTarget);
+  const selectedPlayers = Array.from({ length: 9 }, (_, index) => String(data.get(`orderPlayer${index + 1}`) || ""));
+  if (selectedPlayers.some((id) => !id)) {
+    alert("1番から9番まで、すべて選手を選択してください。");
+    return;
+  }
+  if (new Set(selectedPlayers).size !== 9) {
+    alert("同じ選手を複数の打順に登録することはできません。");
+    return;
+  }
+
+  setState((prev) => {
+    const draft = structuredClone(prev);
+    const targetGame = draft.games.find((item) => item.id === game.id);
+    if (!targetGame) throw new Error("編集対象の試合が見つかりません。");
+    pushActionHistory(draft, prev, "order_edit", targetGame.id);
+
+    for (let order = 1; order <= 9; order += 1) {
+      const incomingPlayerId = String(data.get(`orderPlayer${order}`) || "");
+      const position = String(data.get(`position${order}`) || "").trim();
+      if (!incomingPlayerId) throw new Error(`${order}番の選手を選択してください。`);
+
+      let lineup = starterForOrder(draft, targetGame.id, order);
+      if (!lineup) {
+        lineup = {
+          id: uid("lineup"),
+          gameId: targetGame.id,
+          battingOrder: order,
+          playerId: incomingPlayerId,
+          originalPlayerId: incomingPlayerId,
+          currentPlayerId: incomingPlayerId,
+          isStarter: true,
+          position,
+          isBench: false,
+          replacedAt: null,
+          replacedByPlayerId: null,
+        };
+        draft.gameLineups.push(lineup);
+      }
+
+      const outgoingPlayerId = lineup.currentPlayerId || lineup.playerId || null;
+      const changedPlayer = outgoingPlayerId !== incomingPlayerId;
+      const changedPosition = (lineup.position || "") !== position;
+
+      lineup.currentPlayerId = incomingPlayerId;
+      lineup.playerId = incomingPlayerId;
+      lineup.position = position;
+      if (changedPlayer) {
+        lineup.replacedAt = new Date().toISOString();
+        lineup.replacedByPlayerId = incomingPlayerId;
+        draft.substitutions.push({
+          id: uid("sub"),
+          gameId: targetGame.id,
+          inning: targetGame.inning,
+          half: targetGame.half,
+          halfInning: `${targetGame.inning}_${targetGame.half}`,
+          teamType: "self",
+          substitutionType: "substitution_lineup",
+          battingOrder: order,
+          outgoingPlayerId,
+          incomingPlayerId,
+          previousPitcherId: null,
+          newPitcherId: null,
+          createdAt: new Date().toISOString(),
+        });
+      } else if (changedPosition) {
+        draft.substitutions.push({
+          id: uid("sub"),
+          gameId: targetGame.id,
+          inning: targetGame.inning,
+          half: targetGame.half,
+          halfInning: `${targetGame.inning}_${targetGame.half}`,
+          teamType: "self",
+          substitutionType: "substitution_position",
+          battingOrder: order,
+          outgoingPlayerId,
+          incomingPlayerId,
+          previousPitcherId: null,
+          newPitcherId: null,
+          position,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    const nextPitcherId = String(data.get("currentPitcherId") || "");
+    if (nextPitcherId && nextPitcherId !== targetGame.currentPitcherId) {
+      const previousPitcherId = targetGame.currentPitcherId || null;
+      targetGame.currentPitcherId = nextPitcherId;
+      const selfIsAway = targetGame.battingOrder === "top";
+      if (selfIsAway) {
+        targetGame.currentAwayPitcherId = nextPitcherId;
+        if (targetGame.half === "bottom") targetGame.currentDefensivePitcherId = nextPitcherId;
+      } else {
+        targetGame.currentHomePitcherId = nextPitcherId;
+        if (targetGame.half === "top") targetGame.currentDefensivePitcherId = nextPitcherId;
+      }
+      const activePa = draft.plateAppearances.find((pa) => pa.id === targetGame.currentPlateAppearanceId);
+      if (activePa && activePa.battingTeamType === "opponent") {
+        activePa.pitcherId = nextPitcherId;
+        activePa.pitcherName = playerNameFromSource(draft, nextPitcherId, "未設定");
+      }
+      draft.substitutions.push({
+        id: uid("sub"),
+        gameId: targetGame.id,
+        inning: targetGame.inning,
+        half: targetGame.half,
+        halfInning: `${targetGame.inning}_${targetGame.half}`,
+        teamType: "self",
+        substitutionType: "substitution_pitcher",
+        battingOrder: null,
+        outgoingPlayerId: null,
+        incomingPlayerId: null,
+        previousPitcherId,
+        previousPitcherName: playerNameFromSource(draft, previousPitcherId, "未設定"),
+        newPitcherId: nextPitcherId,
+        newPitcherName: playerNameFromSource(draft, nextPitcherId, "未設定"),
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    draft.screen = "live";
+    return draft;
+  }, "order_edit");
+}
+
 function exportBackup() {
   const payload = {
     app: "baseball-score-mvp",
@@ -1272,6 +1410,7 @@ function screenHtml() {
   if (state.screen === "players") return playersHtml();
   if (state.screen === "newGame") return newGameHtml();
   if (state.screen === "live") return liveHtml();
+  if (state.screen === "orderEdit") return orderEditHtml();
   if (state.screen === "timeline") return timelineHtml();
   if (state.screen === "stats") return statsHtml();
   return homeHtml();
@@ -1412,6 +1551,59 @@ function newGameHtml() {
   `;
 }
 
+function orderEditHtml() {
+  const game = currentGame();
+  if (!game) return `<section class="section"><h2>オーダー編集</h2><p class="notice">試合を選択してください。</p></section>`;
+  if (isGameEnded(game)) {
+    return `
+      <section class="section">
+        <h2>オーダー編集</h2>
+        <p class="notice">終了した試合のオーダーは編集できません。</p>
+        <button class="secondary" data-screen="live">試合入力へ戻る</button>
+      </section>
+    `;
+  }
+  const lineups = Array.from({ length: 9 }, (_, index) => {
+    const order = index + 1;
+    return starterForOrder(state, game.id, order) || {
+      id: "",
+      gameId: game.id,
+      battingOrder: order,
+      currentPlayerId: "",
+      playerId: "",
+      position: "",
+    };
+  });
+  return `
+    <section class="section">
+      <h2>オーダー編集</h2>
+      <p class="muted">変更はこれ以降の打席・投球に反映します。過去の速報・集計・打席記録は変更しません。</p>
+      <form id="orderEditForm" class="form-stack">
+        <div class="lineup-grid">
+          ${lineups.map((lineup) => `
+            <label>
+              ${lineup.battingOrder}番 選手
+              <select name="orderPlayer${lineup.battingOrder}">${playerOptions(lineup.currentPlayerId || lineup.playerId)}</select>
+            </label>
+            <label>
+              ${lineup.battingOrder}番 守備位置
+              <input name="position${lineup.battingOrder}" value="${escapeAttr(lineup.position || "")}" placeholder="例：遊撃手">
+            </label>
+          `).join("")}
+        </div>
+        <label>
+          現在の自チーム投手
+          <select name="currentPitcherId">${playerOptions(game.currentPitcherId || game.startingPitcherId || "")}</select>
+        </label>
+        <div class="actions">
+          <button class="primary" type="submit">変更を保存</button>
+          <button class="secondary" type="button" data-screen="live">戻る</button>
+        </div>
+      </form>
+    </section>
+  `;
+}
+
 function liveHtml() {
   const game = currentGame();
   if (!game) return `<section class="section"><h2>試合入力</h2><p class="notice">先に試合を作成してください。</p></section>`;
@@ -1438,7 +1630,6 @@ function liveHtml() {
           <div class="player-now">
             <p><span>打者</span><strong>${escapeHtml(currentBatterLabel(game))}</strong></p>
             <p><span>投手</span><strong>${escapeHtml(pitcher.name)}</strong></p>
-            <p><span>状態</span><strong>${gameStatusLabel(game)}</strong></p>
           </div>
         </div>
         ${ended ? `<p class="notice">この試合は終了済みです。速報・集計は閲覧できますが、入力はできません。</p>` : ""}
@@ -1457,6 +1648,9 @@ function liveHtml() {
       ` : `
       <section class="section live-substitution-panel">
         <h3>選手交代</h3>
+        <div class="actions">
+          <button class="secondary" data-screen="orderEdit">オーダー編集</button>
+        </div>
         <div class="substitution-grid">
           <div class="substitution-box">
             <label>
@@ -1781,6 +1975,22 @@ function resultTimeline(result) {
 }
 
 function substitutionTimeline(substitution) {
+  if (substitution.substitutionType === "substitution_lineup") {
+    return `
+      <div class="timeline-item substitution-event">
+        <strong>選手交代</strong>
+        <div class="muted">${substitution.inning}回${halfLabel(substitution.half)} ${substitution.battingOrder}番 ${playerName(substitution.outgoingPlayerId, "未設定")} → ${playerName(substitution.incomingPlayerId, "未設定")}</div>
+      </div>
+    `;
+  }
+  if (substitution.substitutionType === "substitution_position") {
+    return `
+      <div class="timeline-item substitution-event">
+        <strong>守備位置変更</strong>
+        <div class="muted">${substitution.inning}回${halfLabel(substitution.half)} ${substitution.battingOrder}番 ${playerName(substitution.incomingPlayerId, "未設定")} / ${escapeHtml(substitution.position || "位置変更")}</div>
+      </div>
+    `;
+  }
   if (substitution.substitutionType === "substitution_pinch_hitter") {
     return `
       <div class="timeline-item substitution-event">
@@ -1850,13 +2060,23 @@ function statsHtml() {
 
 function battingStatsHtml(game) {
   const rows = battingRows(game);
+  const opponent = opponentBattingRow(game);
   return `
     <section class="section span-12">
       <h3>自チーム打撃集計</h3>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>選手</th><th>打席</th><th>打数</th><th>安打</th><th>単打</th><th>二塁打</th><th>三塁打</th><th>本塁打</th><th>三振</th><th>四球</th><th>死球</th><th>犠打</th><th>併殺</th><th>失策出塁</th><th>盗塁</th><th>盗塁死</th><th>打点</th><th>得点</th><th>打率</th><th>出塁率</th><th>OPS</th><th>コンタクト率</th></tr></thead>
-          <tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.name)}</td><td>${row.pa}</td><td>${row.ab}</td><td>${row.hits}</td><td>${row.single}</td><td>${row.double}</td><td>${row.triple}</td><td>${row.homerun}</td><td>${row.strikeouts}</td><td>${row.walks}</td><td>${row.hbp}</td><td>${row.sacrifice}</td><td>${row.doubleplay}</td><td>${row.errorReach}</td><td>${row.steals}</td><td>${row.caughtStealing}</td><td>${row.rbi}</td><td>${row.runs}</td><td>${formatRate(row.avg)}</td><td>${formatRate(row.obp)}</td><td>${formatRate(row.ops)}</td><td>${formatPercent(row.contactRate)}</td></tr>`).join("")}</tbody>
+          <thead><tr><th>選手</th><th>打席</th><th>打数</th><th>安打</th><th>単打</th><th>二塁打</th><th>三塁打</th><th>本塁打</th><th>三振</th><th>四球</th><th>死球</th><th>犠打</th><th>併殺</th><th>失策出塁</th><th>盗塁</th><th>盗塁死</th><th>打点</th><th>得点</th><th>打率</th><th>出塁率</th><th>長打率</th><th>OPS</th><th>コンタクト率</th></tr></thead>
+          <tbody>${rows.map((row) => battingRowHtml(row)).join("")}</tbody>
+        </table>
+      </div>
+    </section>
+    <section class="section span-12">
+      <h3>相手チーム打撃集計</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>チーム</th><th>打席</th><th>打数</th><th>安打</th><th>単打</th><th>二塁打</th><th>三塁打</th><th>本塁打</th><th>三振</th><th>四球</th><th>死球</th><th>犠打</th><th>併殺</th><th>失策出塁</th><th>盗塁</th><th>盗塁死</th><th>打点</th><th>得点</th><th>打率</th><th>出塁率</th><th>長打率</th><th>OPS</th><th>コンタクト率</th></tr></thead>
+          <tbody>${battingRowHtml(opponent)}</tbody>
         </table>
       </div>
     </section>
@@ -1865,6 +2085,7 @@ function battingStatsHtml(game) {
 
 function pitchingStatsHtml(game) {
   const rows = pitchingRows(game);
+  const opponent = opponentPitchingRow(game);
   return `
     <section class="section span-12">
       <h3>自チーム投手集計</h3>
@@ -1875,7 +2096,20 @@ function pitchingStatsHtml(game) {
         </table>
       </div>
     </section>
+    <section class="section span-12">
+      <h3>相手チーム投手集計</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>投手</th><th>投球数</th><th>打者</th><th>見逃し</th><th>空振り</th><th>ボール</th><th>ストライク率</th><th>初球ストライク率</th><th>奪三振</th><th>四球</th><th>死球</th><th>被安打</th><th>被本塁打</th><th>失点</th><th>自責点</th></tr></thead>
+          <tbody><tr><td>${escapeHtml(opponent.name)}</td><td>${opponent.pitchCount}</td><td>${opponent.batters}</td><td>${opponent.called}</td><td>${opponent.swinging}</td><td>${opponent.ball}</td><td>${formatPercent(opponent.strikeRate)}</td><td>${formatPercent(opponent.firstPitchStrikeRate)}</td><td>${opponent.strikeouts}</td><td>${opponent.walks}</td><td>${opponent.hbp}</td><td>${opponent.hits}</td><td>${opponent.homerun}</td><td>${opponent.runs}</td><td>${opponent.earnedRuns}</td></tr></tbody>
+        </table>
+      </div>
+    </section>
   `;
+}
+
+function battingRowHtml(row) {
+  return `<tr><td>${escapeHtml(row.name)}</td><td>${row.pa}</td><td>${row.ab}</td><td>${row.hits}</td><td>${row.single}</td><td>${row.double}</td><td>${row.triple}</td><td>${row.homerun}</td><td>${row.strikeouts}</td><td>${row.walks}</td><td>${row.hbp}</td><td>${row.sacrifice}</td><td>${row.doubleplay}</td><td>${row.errorReach}</td><td>${row.steals}</td><td>${row.caughtStealing}</td><td>${row.rbi}</td><td>${row.runs}</td><td>${formatRate(row.avg)}</td><td>${formatRate(row.obp)}</td><td>${formatRate(row.slg)}</td><td>${formatRate(row.ops)}</td><td>${formatPercent(row.contactRate)}</td></tr>`;
 }
 
 function battingRows(game) {
@@ -1922,6 +2156,49 @@ function battingRows(game) {
   });
 }
 
+function opponentBattingRow(game) {
+  const results = state.battingResults.filter((result) => result.gameId === game.id && result.battingTeamType === "opponent");
+  const events = state.gameEvents.filter((event) => event.gameId === game.id && event.battingTeamType === "opponent");
+  return buildBattingSummary("相手チーム", results, events, { opponentTeam: true });
+}
+
+function buildBattingSummary(name, results, events, options = {}) {
+  const row = {
+    name,
+    pa: results.length,
+    ab: results.filter((result) => resultTypes[result.type]?.ab).length,
+    hits: results.filter((result) => resultTypes[result.type]?.hit).length,
+    single: results.filter((result) => result.type === "single").length,
+    double: results.filter((result) => result.type === "double").length,
+    triple: results.filter((result) => result.type === "triple").length,
+    homerun: results.filter((result) => result.type === "homerun").length,
+    strikeouts: results.filter((result) => result.type === "strikeout").length,
+    walks: results.filter((result) => result.type === "walk").length,
+    hbp: results.filter((result) => result.type === "hbp").length,
+    sacrifice: results.filter((result) => result.type === "sacrifice").length,
+    doubleplay: results.filter((result) => result.type === "doubleplay").length,
+    errorReach: results.filter((result) => result.type === "error").length,
+    steals: events.filter((event) => event.eventType === "steal_success").length,
+    caughtStealing: events.filter((event) => event.eventType === "caught_stealing").length,
+    rbi: options.opponentTeam ? sum(results, "runs") : sum(results, "rbi"),
+    runs: sum(results, options.opponentTeam ? "runs" : "runsScored") + sum(events.filter((event) => event.eventType === "run_scored" || event.runsAdded), "runsAdded"),
+    totalBases: 0,
+    avg: 0,
+    obp: 0,
+    slg: 0,
+    ops: 0,
+    contactRate: 0,
+  };
+  row.totalBases = row.single + row.double * 2 + row.triple * 3 + row.homerun * 4;
+  row.avg = row.ab ? row.hits / row.ab : null;
+  const obpDenominator = row.ab + row.walks + row.hbp;
+  row.obp = obpDenominator ? (row.hits + row.walks + row.hbp) / obpDenominator : null;
+  row.slg = row.ab ? row.totalBases / row.ab : null;
+  row.ops = row.obp !== null && row.slg !== null ? row.obp + row.slg : null;
+  row.contactRate = row.pa ? (row.pa - row.strikeouts) / row.pa : null;
+  return row;
+}
+
 function pitchingRows(game) {
   const pitcherIds = [...new Set([
     game.startingPitcherId,
@@ -1965,6 +2242,46 @@ function pitchingRows(game) {
   });
 }
 
+function opponentPitchingRow(game) {
+  const allSelfPlateAppearances = state.plateAppearances.filter((pa) => pa.gameId === game.id && pa.battingTeamType === "self");
+  const completedSelfPlateAppearances = allSelfPlateAppearances.filter((pa) => pa.result);
+  const selfPaIds = new Set(allSelfPlateAppearances.map((pa) => pa.id));
+  const pitches = state.pitches.filter((pitch) => pitch.gameId === game.id && selfPaIds.has(pitch.plateAppearanceId));
+  const results = state.battingResults.filter((result) => result.gameId === game.id && result.battingTeamType === "self");
+  const events = state.gameEvents.filter((event) => event.gameId === game.id && event.battingTeamType === "self");
+  return buildPitchingSummary("相手投手", pitches, results, events, completedSelfPlateAppearances);
+}
+
+function buildPitchingSummary(name, pitches, results, events, plateAppearances) {
+  const strikePitches = pitches.filter(isStrikePitch);
+  const ballPitches = pitches.filter(isBallPitch);
+  const firstPitchStrikeCount = plateAppearances.filter((pa) => {
+    const firstPitch = pitches
+      .filter((pitch) => pitch.plateAppearanceId === pa.id)
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))[0];
+    return firstPitch ? isStrikePitch(firstPitch) : false;
+  }).length;
+  return {
+    name,
+    pitchCount: pitches.length,
+    batters: plateAppearances.length,
+    called: pitches.filter((pitch) => pitch.type === "called").length,
+    swinging: pitches.filter((pitch) => pitch.type === "swinging").length,
+    ball: ballPitches.length,
+    strikeRate: pitches.length ? strikePitches.length / pitches.length : null,
+    firstPitchStrikeRate: plateAppearances.length ? firstPitchStrikeCount / plateAppearances.length : null,
+    strikeouts: results.filter((result) => result.type === "strikeout").length,
+    walks: results.filter((result) => result.type === "walk").length,
+    hbp: results.filter((result) => result.type === "hbp").length,
+    hits: results.filter((result) => resultTypes[result.type]?.hit).length,
+    homerun: results.filter((result) => result.type === "homerun").length,
+    wildPitch: events.filter((event) => event.eventType === "wild_pitch").length,
+    balk: events.filter((event) => event.eventType === "balk").length,
+    runs: sum(results, "runs") + sum(events, "runsAdded"),
+    earnedRuns: sum(results, "earnedRuns"),
+  };
+}
+
 function isStrikePitch(pitch) {
   if (["called", "swinging", "foul", "inplay"].includes(pitch.type)) return true;
   if (pitch.type === "result") return !["walk", "hbp"].includes(pitch.resultType);
@@ -1996,6 +2313,7 @@ function bindEvents() {
   });
   document.querySelector("#playerForm")?.addEventListener("submit", savePlayer);
   document.querySelector("#gameForm")?.addEventListener("submit", createGame);
+  document.querySelector("#orderEditForm")?.addEventListener("submit", saveOrderEdit);
   document.querySelectorAll("[data-edit-player]").forEach((button) => {
     button.addEventListener("click", () => setState((prev) => ({ ...prev, editingPlayerId: button.dataset.editPlayer })));
   });
