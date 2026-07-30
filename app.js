@@ -127,13 +127,17 @@ function migrateState(source) {
 
   migrated.games = migrated.games.map((game) => {
     const currentBatterOrder = normalizeOrder(game.currentBatterOrder || ((game.currentBatterIndex || 0) + 1));
+    const currentOpponentBatterOrder = normalizeOrder(game.currentOpponentBatterOrder || 1);
     const starter = migrated.gameLineups.find((lineup) => lineup.gameId === game.id && lineup.battingOrder === currentBatterOrder);
     const selfIsAway = game.battingOrder === "top";
     const currentAwayPitcherId = game.currentAwayPitcherId || (selfIsAway ? (game.currentPitcherId || game.startingPitcherId || null) : null);
     const currentHomePitcherId = game.currentHomePitcherId || (!selfIsAway ? (game.currentPitcherId || game.startingPitcherId || null) : null);
     return {
       ...game,
+      status: game.status || "in_progress",
+      endedAt: game.endedAt || null,
       currentBatterOrder,
+      currentOpponentBatterOrder,
       currentBatterId: game.currentBatterId || starter?.playerId || null,
       startingPitcherId: game.startingPitcherId || null,
       currentPitcherId: game.currentPitcherId || game.startingPitcherId || null,
@@ -157,6 +161,8 @@ function migrateState(source) {
     halfInning: pa.halfInning || `${pa.inning}_${pa.half}`,
     isTop: typeof pa.isTop === "boolean" ? pa.isTop : pa.half === "top",
     battingTeamType: pa.battingTeamType || pa.battingSide || "self",
+    batterOrder: pa.batterOrder || null,
+    opponentBatterOrder: pa.opponentBatterOrder || null,
     result: pa.result || null,
     rbi: Number(pa.rbi || 0),
     runsScored: Number(pa.runsScored || 0),
@@ -359,6 +365,9 @@ function repairGameState(source, game) {
   if (!currentPa || currentPa.result) repaired.currentPlateAppearanceId = null;
   const currentBatterOrder = normalizeOrder(repaired.currentBatterOrder || 1);
   repaired.currentBatterOrder = currentBatterOrder;
+  repaired.currentOpponentBatterOrder = normalizeOrder(repaired.currentOpponentBatterOrder || 1);
+  repaired.status = repaired.status || "in_progress";
+  repaired.endedAt = repaired.endedAt || null;
   const starter = source.gameLineups?.find((lineup) => lineup.gameId === repaired.id && lineup.isStarter && Number(lineup.battingOrder) === currentBatterOrder);
   if (currentSide(repaired) === "self" && starter) repaired.currentBatterId = starter.currentPlayerId || starter.playerId;
   repaired.currentDefensivePitcherId = repaired.half === "top" ? repaired.currentHomePitcherId || null : repaired.currentAwayPitcherId || null;
@@ -393,6 +402,14 @@ function currentSide(game) {
   return game.battingOrder === game.half ? "self" : "opponent";
 }
 
+function isGameEnded(game) {
+  return game.status === "ended";
+}
+
+function gameStatusLabel(game) {
+  return isGameEnded(game) ? "終了" : "進行中";
+}
+
 function halfLabel(half) {
   return half === "top" ? "表" : "裏";
 }
@@ -425,6 +442,14 @@ function currentBatter(game, source = state) {
   return source.players[legacyIndex % source.players.length];
 }
 
+function currentBatterLabel(game, source = state) {
+  if (currentSide(game) === "self") {
+    const batter = currentBatter(game, source);
+    return `${normalizeOrder(game.currentBatterOrder)}番 ${batter ? playerNameFromSource(source, batter.id, "未設定") : "未設定"}`;
+  }
+  return `${normalizeOrder(game.currentOpponentBatterOrder)}番`;
+}
+
 function currentPitcher(game, source = state) {
   return source.players.find((player) => player.id === game.currentPitcherId) || null;
 }
@@ -451,6 +476,7 @@ function ensurePlateAppearance(draft, game) {
 
   const battingTeamType = currentSide(game);
   const batter = battingTeamType === "self" ? currentBatter(game, draft) : null;
+  const batterOrder = battingTeamType === "self" ? normalizeOrder(game.currentBatterOrder) : normalizeOrder(game.currentOpponentBatterOrder);
   const pitcher = defensivePitcherInfo(game, draft);
   const pitcherId = battingTeamType === "opponent" && pitcher.isSelfPitcher ? pitcher.id : null;
 
@@ -459,6 +485,8 @@ function ensurePlateAppearance(draft, game) {
     gameId: game.id,
     playerId: batter?.id || null,
     batterId: batter?.id || null,
+    batterOrder,
+    opponentBatterOrder: battingTeamType === "opponent" ? batterOrder : null,
     pitcherId,
     pitcherName: pitcher.name,
     battingSide: battingTeamType,
@@ -482,6 +510,10 @@ function ensurePlateAppearance(draft, game) {
 function recordPitch(type) {
   const game = currentGame();
   if (!game) return;
+  if (isGameEnded(game)) {
+    setState((prev) => ({ ...prev, lastError: "終了した試合には入力できません。" }), "pitch_input_blocked");
+    return;
+  }
   if (!pitchTypes[type]) {
     setState((prev) => ({ ...prev, lastError: `未対応の投球種別です: ${type}` }), "pitch_input_error");
     return;
@@ -538,6 +570,10 @@ function submitResult(type) {
   const runs = Math.max(0, Number(runsInput?.value || 0));
   const game = currentGame();
   if (!game) return;
+  if (isGameEnded(game)) {
+    setState((prev) => ({ ...prev, lastError: "終了した試合には入力できません。" }), "plate_appearance_result_blocked");
+    return;
+  }
   if (!resultTypes[type]) {
     setState((prev) => ({ ...prev, lastError: `未対応の打席結果です: ${type}` }), "plate_appearance_result_error");
     return;
@@ -615,6 +651,7 @@ function finishPlateAppearance(draft, game, type, runs) {
   game.currentPlateAppearanceId = null;
 
   if (battingTeamType === "self") advanceSelfBatter(draft, game);
+  else advanceOpponentBatter(game);
   if (game.outs >= 3) switchSides(game);
 }
 
@@ -622,10 +659,14 @@ function advanceSelfBatter(draft, game) {
   const nextOrder = normalizeOrder((game.currentBatterOrder || 1) + 1);
   game.currentBatterOrder = nextOrder;
   const nextStarter = starterForOrder(draft, game.id, nextOrder);
-  game.currentBatterId = nextStarter?.playerId || null;
+  game.currentBatterId = nextStarter?.currentPlayerId || nextStarter?.playerId || null;
   if (draft.players.length > 0) {
     game.currentBatterIndex = ((game.currentBatterIndex || 0) + 1) % draft.players.length;
   }
+}
+
+function advanceOpponentBatter(game) {
+  game.currentOpponentBatterOrder = normalizeOrder((game.currentOpponentBatterOrder || 1) + 1);
 }
 
 function switchSides(game) {
@@ -685,7 +726,10 @@ function createGame(event) {
     opponentScore: 0,
     currentBatterIndex: 0,
     currentBatterOrder: 1,
+    currentOpponentBatterOrder: 1,
     currentBatterId: starterIds[0],
+    status: "in_progress",
+    endedAt: null,
     startingPitcherId,
     currentPitcherId: startingPitcherId,
     currentAwayPitcherId: selfIsAway ? startingPitcherId : null,
@@ -781,6 +825,30 @@ function resetDemoData() {
 
 function setStatsTab(tabName) {
   setState((prev) => ({ ...prev, statsTab: tabName }));
+}
+
+function endCurrentGame() {
+  const game = currentGame();
+  if (!game) return;
+  if (isGameEnded(game)) {
+    setState((prev) => ({ ...prev, screen: "newGame" }), "open_game_list");
+    return;
+  }
+  if (!confirm("試合を終了しますか？")) return;
+
+  setState((prev) => {
+    const draft = structuredClone(prev);
+    const targetGame = draft.games.find((item) => item.id === game.id);
+    if (!targetGame) throw new Error("終了対象の試合が見つかりません。");
+    pushActionHistory(draft, prev, "game_end", targetGame.id);
+    targetGame.status = "ended";
+    targetGame.endedAt = new Date().toISOString();
+    targetGame.balls = 0;
+    targetGame.strikes = 0;
+    targetGame.currentPlateAppearanceId = null;
+    draft.screen = "newGame";
+    return draft;
+  }, "game_end");
 }
 
 const gameEventTypes = {
@@ -894,6 +962,7 @@ function toggleRunner(base) {
     const draft = structuredClone(prev);
     const targetGame = draft.games.find((item) => item.id === game.id);
     if (!targetGame) throw new Error("入力対象の試合が見つかりません。");
+    if (isGameEnded(targetGame)) throw new Error("終了した試合には入力できません。");
     const before = Boolean(targetGame[key]);
     const runners = runnerSnapshot(targetGame);
     runners[key] = !before;
@@ -913,6 +982,10 @@ function toggleRunner(base) {
 function addManualRun() {
   const game = currentGame();
   if (!game) return;
+  if (isGameEnded(game)) {
+    setState((prev) => ({ ...prev, lastError: "終了した試合には入力できません。" }), "game_event_blocked");
+    return;
+  }
   setState((prev) => {
     const draft = structuredClone(prev);
     const targetGame = draft.games.find((item) => item.id === game.id);
@@ -931,6 +1004,10 @@ function addManualRun() {
 function recordSituationEvent() {
   const game = currentGame();
   if (!game) return;
+  if (isGameEnded(game)) {
+    setState((prev) => ({ ...prev, lastError: "終了した試合には入力できません。" }), "game_event_blocked");
+    return;
+  }
   const eventType = document.querySelector("#situationEventType")?.value || "";
   if (!eventType) {
     alert("状況変化の種類を選択してください。");
@@ -962,6 +1039,10 @@ function capitalizeBase(base) {
 function undoLastAction() {
   const game = currentGame();
   if (!game) return;
+  if (isGameEnded(game)) {
+    alert("終了した試合では入力の取り消しはできません。");
+    return;
+  }
   if (!confirm("直前の入力を取り消しますか？")) return;
   setState((prev) => {
     const draft = structuredClone(prev);
@@ -984,6 +1065,10 @@ function undoLastAction() {
 function substitutePinchHitter() {
   const game = currentGame();
   const incomingPlayerId = document.querySelector("#pinchHitterSelect")?.value;
+  if (game && isGameEnded(game)) {
+    setState((prev) => ({ ...prev, lastError: "終了した試合には入力できません。" }), "substitution_blocked");
+    return;
+  }
   if (!game || currentSide(game) !== "self" || !incomingPlayerId) {
     alert("代打選手を選択してください。");
     return;
@@ -1035,6 +1120,10 @@ function substitutePinchHitter() {
 function substitutePitcher() {
   const game = currentGame();
   if (!game) return;
+  if (isGameEnded(game)) {
+    setState((prev) => ({ ...prev, lastError: "終了した試合には入力できません。" }), "substitution_blocked");
+    return;
+  }
   const before = defensivePitcherInfo(game);
   const newSelfPitcherId = document.querySelector("#pitcherChangeSelect")?.value || "";
   const newOpponentPitcherName = document.querySelector("#opponentPitcherNameInput")?.value?.trim() || "";
@@ -1207,7 +1296,7 @@ function homeHtml() {
             <div class="list-item">
               <div>
                 <strong>${escapeHtml(game.name)}</strong><br>
-                <span class="muted">${game.inning}回${halfLabel(game.half)} / 自 ${game.selfScore} - 相 ${game.opponentScore}</span>
+                <span class="muted">${gameStatusLabel(game)} / ${game.inning}回${halfLabel(game.half)} / 自 ${game.selfScore} - 相 ${game.opponentScore}</span>
               </div>
               <button class="primary" data-pick-game="${game.id}">開く</button>
             </div>
@@ -1310,10 +1399,11 @@ function newGameHtml() {
             <div class="list-item">
               <div>
                 <strong>${escapeHtml(game.name)}</strong><br>
-                <span class="muted">${game.battingOrder === "top" ? "自チーム先攻" : "自チーム後攻"} / 自 ${game.selfScore} - 相 ${game.opponentScore}</span><br>
+                <span class="muted">${gameStatusLabel(game)} / ${game.battingOrder === "top" ? "自チーム先攻" : "自チーム後攻"} / 自 ${game.selfScore} - 相 ${game.opponentScore}</span><br>
                 <span class="muted">先発 ${playerName(game.startingPitcherId, "未設定")}</span>
+                ${game.endedAt ? `<br><span class="muted">終了 ${escapeHtml(new Date(game.endedAt).toLocaleString("ja-JP"))}</span>` : ""}
               </div>
-              <button class="primary" data-pick-game="${game.id}">開く</button>
+              <button class="primary" data-pick-game="${game.id}">${isGameEnded(game) ? "閲覧" : "開く"}</button>
             </div>
           `).join("") || `<p class="muted">まだ試合がありません。</p>`}
         </div>
@@ -1328,8 +1418,9 @@ function liveHtml() {
   const batter = currentBatter(game);
   const pitcher = defensivePitcherInfo(game);
   const side = currentSide(game);
-  const orderLabel = side === "self" ? `${normalizeOrder(game.currentBatterOrder)}番` : "相手打順";
+  const ended = isGameEnded(game);
   const inningText = `${game.inning}回${halfLabel(game.half)}`;
+  const inputDisabled = ended ? "disabled" : "";
 
   return `
     <div class="live-layout">
@@ -1345,12 +1436,25 @@ function liveHtml() {
             ${bsoRow("O", Math.min(game.outs, 2), 2, "out")}
           </div>
           <div class="player-now">
-            <p><span>打者</span><strong>${side === "self" ? `${orderLabel} ${batter ? escapeHtml(batter.name) : "未設定"}` : "相手打者"}</strong></p>
+            <p><span>打者</span><strong>${escapeHtml(currentBatterLabel(game))}</strong></p>
             <p><span>投手</span><strong>${escapeHtml(pitcher.name)}</strong></p>
+            <p><span>状態</span><strong>${gameStatusLabel(game)}</strong></p>
           </div>
         </div>
+        ${ended ? `<p class="notice">この試合は終了済みです。速報・集計は閲覧できますが、入力はできません。</p>` : ""}
         ${side === "self" && !batter ? `<p class="notice">この試合の打順が見つかりません。新しい試合では1〜9番を登録してください。</p>` : ""}
       </section>
+      ${ended ? `
+      <section class="section span-12">
+        <h3>試合終了</h3>
+        <p class="muted">${game.endedAt ? `${escapeHtml(new Date(game.endedAt).toLocaleString("ja-JP"))} に終了しました。` : "終了済みです。"}</p>
+        <div class="actions">
+          <button class="primary" data-screen="timeline">速報を見る</button>
+          <button class="secondary" data-screen="stats">集計を見る</button>
+          <button class="secondary" data-screen="newGame">試合一覧へ</button>
+        </div>
+      </section>
+      ` : `
       <section class="section live-substitution-panel">
         <h3>選手交代</h3>
         <div class="substitution-grid">
@@ -1380,7 +1484,9 @@ function liveHtml() {
         <h3>打席結果入力</h3>
         <label>
           この打席の得点
-          <input id="runsInput" type="number" min="0" value="${state.pendingRuns || 0}">
+          <select id="runsInput">
+            ${[0, 1, 2, 3, 4].map((runs) => `<option value="${runs}" ${Number(state.pendingRuns || 0) === runs ? "selected" : ""}>${runs}</option>`).join("")}
+          </select>
         </label>
         <div class="result-grid" style="margin-top: 10px;">
           ${Object.entries(resultTypes).filter(([key]) => !["strikeout", "walk"].includes(key)).map(([key, value]) => `<button class="${value.out ? "danger" : value.hit ? "success" : "secondary"}" data-result="${key}">${value.label}</button>`).join("")}
@@ -1421,6 +1527,12 @@ function liveHtml() {
           <button class="secondary" data-undo-action="1">直前の入力を取り消す</button>
         </div>
       </section>
+      <section class="section span-12 end-game-panel">
+        <h3>試合終了</h3>
+        <p class="muted">試合が終わったら、ここから記録を確定します。</p>
+        <button class="danger" data-end-game="1" ${inputDisabled}>試合終了</button>
+      </section>
+      `}
       ${debugStateHtml(game)}
     </div>
   `;
@@ -1444,7 +1556,7 @@ function debugStateHtml(game) {
         <span>エラー</span><strong>${escapeHtml(state.lastError || "-")}</strong>
         <span>DBエラー</span><strong>${escapeHtml(state.lastDbError || "-")}</strong>
         <span>試合状態</span><strong>${game.inning}回${halfLabel(game.half)} / ${game.outs}死 / B${game.balls}-S${game.strikes}</strong>
-        <span>打順・打者</span><strong>${currentSide(game) === "self" ? `${normalizeOrder(game.currentBatterOrder)}番 ${batter ? escapeHtml(batter.name) : "未設定"}` : "相手打者"}</strong>
+        <span>打順・打者</span><strong>${escapeHtml(currentBatterLabel(game))}</strong>
         <span>投手</span><strong>${escapeHtml(pitcher.name)}</strong>
         <span>現在打席ID</span><strong>${escapeHtml(currentPa?.id || "-")}</strong>
         <span>直近件数</span><strong>投球 ${recentPitches.length} / 打席 ${recentPas.length} / イベント ${recentEvents.length}</strong>
@@ -1628,7 +1740,7 @@ function plateAppearanceCard(pa, game) {
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
   const batterLabel = pa.battingTeamType === "self"
     ? `${battingOrderLabel(game, pa.batterId)}${playerName(pa.batterId, "未設定")}`
-    : "相手打者";
+    : `${normalizeOrder(pa.opponentBatterOrder || pa.batterOrder || 1)}番`;
   return `
     <details class="plate-card">
       <summary>
@@ -1904,6 +2016,7 @@ function bindEvents() {
   document.querySelector("[data-pitcher-change]")?.addEventListener("click", substitutePitcher);
   document.querySelector("[data-situation-event]")?.addEventListener("click", recordSituationEvent);
   document.querySelector("[data-undo-action]")?.addEventListener("click", undoLastAction);
+  document.querySelector("[data-end-game]")?.addEventListener("click", endCurrentGame);
   document.querySelectorAll("[data-stats-tab]").forEach((button) => {
     button.addEventListener("click", () => setStatsTab(button.dataset.statsTab));
   });
