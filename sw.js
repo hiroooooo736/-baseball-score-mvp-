@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "baseball-score-mvp-v13";
+const CACHE_NAME = "baseball-score-mvp-v14";
 const APP_SHELL = [
   "./",
   "./index.html",
