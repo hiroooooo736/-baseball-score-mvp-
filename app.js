@@ -36,6 +36,31 @@ const resultTypes = {
   error: { label: "失策", out: false, hit: false, ab: true, errorReach: true },
 };
 
+const fieldLocations = {
+  pitcher: { label: "投", name: "ピッチャー" },
+  catcher: { label: "捕", name: "キャッチャー" },
+  first: { label: "一", name: "ファースト" },
+  second: { label: "二", name: "セカンド" },
+  third: { label: "三", name: "サード" },
+  short: { label: "遊", name: "ショート" },
+  left: { label: "左", name: "レフト" },
+  center: { label: "中", name: "センター" },
+  right: { label: "右", name: "ライト" },
+};
+
+const fieldLocationResultKeys = new Set([
+  "single",
+  "double",
+  "triple",
+  "homerun",
+  "groundout",
+  "flyout",
+  "lineout",
+  "sacrifice",
+  "error",
+  "doubleplay",
+]);
+
 Object.assign(pitchTypes, {
   called: "見逃しストライク",
   swinging: "空振りストライク",
@@ -79,6 +104,8 @@ const initialState = {
   statsTab: "batting",
   editingPlayerId: null,
   batterDetailPlayerId: null,
+  batterDetailOpponentOrder: null,
+  pendingFieldLocationResultId: null,
   pendingRuns: 0,
   lastActionType: "",
   lastError: "",
@@ -120,6 +147,8 @@ function migrateState(source) {
   migrated.gameActionHistory = migrated.gameActionHistory || [];
   migrated.statsTab = migrated.statsTab || "batting";
   migrated.batterDetailPlayerId = migrated.batterDetailPlayerId || null;
+  migrated.batterDetailOpponentOrder = migrated.batterDetailOpponentOrder || null;
+  migrated.pendingFieldLocationResultId = migrated.pendingFieldLocationResultId || null;
   migrated.lastActionType = migrated.lastActionType || "";
   migrated.lastError = migrated.lastError || "";
   migrated.lastDbError = migrated.lastDbError || "";
@@ -190,6 +219,8 @@ function migrateState(source) {
       pitcherId: result.pitcherId || pa?.pitcherId || null,
       pitcherName: result.pitcherName || pa?.pitcherName || null,
       battingTeamType: result.battingTeamType || result.battingSide || pa?.battingTeamType || "self",
+      fieldLocation: result.fieldLocation || "",
+      fieldLocationLabel: result.fieldLocationLabel || "",
       rbi: Number(result.rbi ?? (result.battingSide === "self" ? result.runs || 0 : 0)),
       runsScored: Number(result.runsScored ?? (result.battingSide === "self" ? result.runs || 0 : 0)),
       earnedRuns: Number(result.earnedRuns ?? (result.battingSide === "opponent" ? result.runs || 0 : 0)),
@@ -611,7 +642,8 @@ function submitResult(type) {
       countAfter: before,
       createdAt: new Date().toISOString(),
     });
-    finishPlateAppearance(draft, targetGame, type, runs);
+    const result = finishPlateAppearance(draft, targetGame, type, runs);
+    draft.pendingFieldLocationResultId = isFieldLocationResult(type) ? result.id : null;
     draft.pendingRuns = 0;
     draft.screen = "live";
     return draft;
@@ -638,6 +670,8 @@ function finishPlateAppearance(draft, game, type, runs) {
     battingTeamType,
     type,
     label: meta.label,
+    fieldLocation: "",
+    fieldLocationLabel: "",
     runs,
     rbi,
     runsScored,
@@ -665,6 +699,7 @@ function finishPlateAppearance(draft, game, type, runs) {
   if (battingTeamType === "self") advanceSelfBatter(draft, game);
   else advanceOpponentBatter(game);
   if (game.outs >= 3) switchSides(game);
+  return result;
 }
 
 function advanceSelfBatter(draft, game) {
@@ -1623,7 +1658,9 @@ function liveHtml() {
   const inputDisabled = ended ? "disabled" : "";
   const batterDisplay = side === "self" && batter
     ? `<button class="batter-detail-button" data-batter-detail="${escapeAttr(batter.id)}"><span>打者</span><strong>${escapeHtml(currentBatterLabel(game))}</strong></button>`
-    : `<p><span>打者</span><strong>${escapeHtml(currentBatterLabel(game))}</strong></p>`;
+    : side === "opponent"
+      ? `<button class="batter-detail-button" data-opponent-batter-detail="${normalizeOrder(game.currentOpponentBatterOrder)}"><span>打者</span><strong>${escapeHtml(currentBatterLabel(game))}</strong></button>`
+      : `<p><span>打者</span><strong>${escapeHtml(currentBatterLabel(game))}</strong></p>`;
 
   return `
     <div class="live-layout">
@@ -1694,7 +1731,7 @@ function liveHtml() {
           </select>
         </label>
         <div class="result-grid" style="margin-top: 10px;">
-          ${Object.entries(resultTypes).filter(([key]) => !["strikeout", "walk"].includes(key)).map(([key, value]) => `<button class="${value.out ? "danger" : value.hit ? "success" : "secondary"}" data-result="${key}">${value.label}</button>`).join("")}
+          ${Object.entries(resultTypes).filter(([key]) => key !== "strikeout").map(([key, value]) => `<button class="${value.out ? "danger" : value.hit ? "success" : "secondary"}" data-result="${key}">${value.label}</button>`).join("")}
         </div>
       </section>
       <section class="section live-event-panel">
@@ -1740,19 +1777,21 @@ function liveHtml() {
       `}
       ${debugStateHtml(game)}
       ${batterDetailModalHtml(game)}
+      ${fieldLocationModalHtml(game)}
     </div>
   `;
 }
 
 function batterDetailModalHtml(game) {
   const playerId = state.batterDetailPlayerId;
-  if (!playerId) return "";
-  const player = state.players.find((item) => item.id === playerId);
-  if (!player) return "";
-  const appearances = state.plateAppearances
-    .filter((pa) => pa.gameId === game.id && pa.battingTeamType === "self" && pa.batterId === playerId && pa.resultId)
-    .sort((a, b) => new Date(a.startedAt || a.createdAt || 0) - new Date(b.startedAt || b.createdAt || 0));
-  const orderLabel = battingOrderLabel(game, playerId) || "";
+  const opponentOrder = state.batterDetailOpponentOrder ? normalizeOrder(state.batterDetailOpponentOrder) : null;
+  if (!playerId && !opponentOrder) return "";
+  const player = playerId ? state.players.find((item) => item.id === playerId) : null;
+  if (playerId && !player) return "";
+  const appearances = plateAppearancesForBatterDetail(game, { playerId, opponentOrder });
+  const title = playerId
+    ? `${battingOrderLabel(game, playerId) || ""}${player.name}`
+    : `${opponentOrder}番`;
 
   return `
     <div class="modal-backdrop" data-close-batter-detail="1">
@@ -1760,7 +1799,7 @@ function batterDetailModalHtml(game) {
         <div class="modal-header">
           <div>
             <div class="muted">現在の試合の打席結果</div>
-            <h3>${escapeHtml(orderLabel)}${escapeHtml(player.name)}</h3>
+            <h3>${escapeHtml(title)}</h3>
           </div>
           <button class="secondary small-button" data-close-batter-detail="1" type="button">閉じる</button>
         </div>
@@ -1772,6 +1811,16 @@ function batterDetailModalHtml(game) {
   `;
 }
 
+function plateAppearancesForBatterDetail(game, target) {
+  return state.plateAppearances
+    .filter((pa) => {
+      if (pa.gameId !== game.id || !pa.resultId) return false;
+      if (target.playerId) return pa.battingTeamType === "self" && pa.batterId === target.playerId;
+      return pa.battingTeamType === "opponent" && normalizeOrder(pa.opponentBatterOrder || pa.batterOrder || 1) === target.opponentOrder;
+    })
+    .sort((a, b) => new Date(a.startedAt || a.createdAt || 0) - new Date(b.startedAt || b.createdAt || 0));
+}
+
 function batterPlateAppearanceCard(pa, game, plateNumber) {
   const result = state.battingResults.find((item) => item.id === pa.resultId);
   const pitches = state.pitches
@@ -1781,13 +1830,40 @@ function batterPlateAppearanceCard(pa, game, plateNumber) {
     <details class="plate-card batter-plate-card">
       <summary>
         <span>第${plateNumber}打席</span>
-        <strong>${pa.inning}回${halfLabel(pa.half)}　${result?.label || "結果未設定"}</strong>
+        <strong>${pa.inning}回${halfLabel(pa.half)}　${formatResultLabel(result)}</strong>
       </summary>
       <div class="pitch-detail">
         <div class="muted">投球内容</div>
         ${pitches.length ? pitches.map((pitch, index) => `<div>${index + 1}球目　${pitch.label}</div>`).join("") : `<div class="muted">投球記録なし</div>`}
       </div>
     </details>
+  `;
+}
+
+function fieldLocationModalHtml(game) {
+  const result = state.battingResults.find((item) => item.id === state.pendingFieldLocationResultId && item.gameId === game.id);
+  if (!result || !isFieldLocationResult(result.type)) return "";
+  return `
+    <div class="modal-backdrop field-location-backdrop">
+      <section class="batter-detail-modal field-location-modal" role="dialog" aria-modal="true" aria-label="打球方向の選択">
+        <div class="modal-header">
+          <div>
+            <div class="muted">任意入力</div>
+            <h3>打球方向を選択</h3>
+          </div>
+          <button class="secondary small-button" data-field-location-skip="1" type="button">スキップ</button>
+        </div>
+        <p class="muted">${escapeHtml(result.label)}の方向を記録できます。急ぐ場合はスキップしてください。</p>
+        <div class="field-location-grid">
+          ${Object.entries(fieldLocations).map(([key, value]) => `
+            <button class="secondary field-location-button" data-field-location="${key}" type="button">
+              <strong>${escapeHtml(value.label)}</strong>
+              <span>${escapeHtml(value.name)}</span>
+            </button>
+          `).join("")}
+        </div>
+      </section>
+    </div>
   `;
 }
 
@@ -1798,7 +1874,6 @@ function debugStateHtml(game) {
   const recentEvents = state.gameEvents.filter((event) => event.gameId === game.id).slice(-5);
   const batter = currentBatter(game);
   const pitcher = defensivePitcherInfo(game);
-  const stateSize = JSON.stringify(compactStateForLocalStorage(state)).length;
 
   return `
     <details class="debug-panel">
@@ -1814,7 +1889,6 @@ function debugStateHtml(game) {
         <span>現在打席ID</span><strong>${escapeHtml(currentPa?.id || "-")}</strong>
         <span>直近件数</span><strong>投球 ${recentPitches.length} / 打席 ${recentPas.length} / イベント ${recentEvents.length}</strong>
         <span>Undo履歴</span><strong>${(state.gameActionHistory || []).length}件</strong>
-        <span>保存サイズ目安</span><strong>${Math.round(stateSize / 1024)} KB</strong>
       </div>
     </details>
   `;
@@ -1998,7 +2072,7 @@ function plateAppearanceCard(pa, game) {
     <details class="plate-card">
       <summary>
         <span>${pa.inning}回${halfLabel(pa.half)}</span>
-        <strong>${batterLabel}：${result?.label || "結果未設定"}</strong>
+        <strong>${batterLabel}：${formatResultLabel(result)}</strong>
       </summary>
       <div class="pitch-detail">
         <div class="muted">投球内容</div>
@@ -2011,6 +2085,24 @@ function plateAppearanceCard(pa, game) {
 function battingOrderLabel(game, playerId) {
   const lineup = state.gameLineups.find((item) => item.gameId === game.id && (item.currentPlayerId === playerId || item.playerId === playerId || item.originalPlayerId === playerId));
   return lineup?.battingOrder ? `${lineup.battingOrder}番 ` : "";
+}
+
+function isFieldLocationResult(type) {
+  return fieldLocationResultKeys.has(type);
+}
+
+function formatResultLabel(result) {
+  if (!result) return "結果未設定";
+  if (!result.fieldLocation || !fieldLocations[result.fieldLocation]) return result.label || resultTypes[result.type]?.label || "結果未設定";
+  const locationName = fieldLocations[result.fieldLocation].name;
+  const label = result.label || resultTypes[result.type]?.label || "";
+  if (result.type === "groundout") return `${locationName}ゴロ`;
+  if (result.type === "flyout") return `${locationName}フライ`;
+  if (result.type === "lineout") return `${locationName}ライナー`;
+  if (result.type === "sacrifice") return `${locationName}犠打`;
+  if (result.type === "error") return `${locationName}の失策`;
+  if (result.type === "doubleplay") return `${locationName}への併殺`;
+  return `${locationName}への${label}`;
 }
 
 function pitchTimeline(pitch) {
@@ -2027,7 +2119,7 @@ function resultTimeline(result) {
   const pa = state.plateAppearances.find((item) => item.id === result.plateAppearanceId);
   return `
     <div class="timeline-item">
-      <strong>打席結果：${result.label}</strong>
+      <strong>打席結果：${formatResultLabel(result)}</strong>
       <div class="muted">${pa ? `${pa.inning}回${halfLabel(pa.half)} ${playerName(result.batterId)}` : ""} / 投手 ${result.pitcherName || playerName(result.pitcherId, "なし")} / 得点 ${result.runs}</div>
     </div>
   `;
@@ -2413,6 +2505,34 @@ function formatPercent(value) {
   return `${Math.round(value * 1000) / 10}%`;
 }
 
+function setFieldLocation(location) {
+  const game = currentGame();
+  if (!game || !state.pendingFieldLocationResultId || !fieldLocations[location]) return;
+  setState((prev) => {
+    const draft = structuredClone(prev);
+    const result = draft.battingResults.find((item) => item.id === prev.pendingFieldLocationResultId);
+    if (!result) {
+      draft.pendingFieldLocationResultId = null;
+      return draft;
+    }
+    result.fieldLocation = location;
+    result.fieldLocationLabel = fieldLocations[location].name;
+    const pa = draft.plateAppearances.find((item) => item.id === result.plateAppearanceId);
+    if (pa) {
+      pa.fieldLocation = location;
+      pa.fieldLocationLabel = fieldLocations[location].name;
+    }
+    draft.pendingFieldLocationResultId = null;
+    draft.screen = "live";
+    return draft;
+  }, "field_location_update");
+}
+
+function skipFieldLocation() {
+  if (!state.pendingFieldLocationResultId) return;
+  setState((prev) => ({ ...prev, pendingFieldLocationResultId: null }), "field_location_skip");
+}
+
 function bindEvents() {
   document.querySelectorAll("[data-screen]").forEach((button) => {
     button.addEventListener("click", () => setState((prev) => ({ ...prev, screen: button.dataset.screen })));
@@ -2437,11 +2557,18 @@ function bindEvents() {
     button.addEventListener("click", () => submitResult(button.dataset.result));
   });
   document.querySelectorAll("[data-batter-detail]").forEach((button) => {
-    button.addEventListener("click", () => setState((prev) => ({ ...prev, batterDetailPlayerId: button.dataset.batterDetail })));
+    button.addEventListener("click", () => setState((prev) => ({ ...prev, batterDetailPlayerId: button.dataset.batterDetail, batterDetailOpponentOrder: null })));
+  });
+  document.querySelectorAll("[data-opponent-batter-detail]").forEach((button) => {
+    button.addEventListener("click", () => setState((prev) => ({ ...prev, batterDetailPlayerId: null, batterDetailOpponentOrder: Number(button.dataset.opponentBatterDetail || 1) })));
   });
   document.querySelectorAll("[data-close-batter-detail]").forEach((button) => {
-    button.addEventListener("click", () => setState((prev) => ({ ...prev, batterDetailPlayerId: null })));
+    button.addEventListener("click", () => setState((prev) => ({ ...prev, batterDetailPlayerId: null, batterDetailOpponentOrder: null })));
   });
+  document.querySelectorAll("[data-field-location]").forEach((button) => {
+    button.addEventListener("click", () => setFieldLocation(button.dataset.fieldLocation));
+  });
+  document.querySelector("[data-field-location-skip]")?.addEventListener("click", skipFieldLocation);
   document.querySelector("[data-pinch-hit]")?.addEventListener("click", substitutePinchHitter);
   document.querySelector("[data-pitcher-change]")?.addEventListener("click", substitutePitcher);
   document.querySelector("[data-situation-event]")?.addEventListener("click", recordSituationEvent);

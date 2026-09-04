@@ -683,6 +683,37 @@ th {
   grid-template-columns: 92px 1fr;
 }
 
+.field-location-backdrop {
+  z-index: 60;
+}
+
+.field-location-modal {
+  width: min(560px, 100%);
+}
+
+.field-location-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.field-location-button {
+  display: grid;
+  gap: 3px;
+  justify-items: center;
+  min-height: 76px;
+}
+
+.field-location-button strong {
+  font-size: 22px;
+}
+
+.field-location-button span {
+  font-size: 13px;
+  color: var(--muted);
+}
+
 .substitution-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
