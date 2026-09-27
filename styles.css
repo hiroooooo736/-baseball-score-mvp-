@@ -257,6 +257,65 @@ select {
   flex-wrap: wrap;
 }
 
+.history-button {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.section-heading-row {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-heading-row p {
+  margin: 0 0 12px;
+}
+
+.game-history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.game-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+}
+
+.game-history-main {
+  display: grid;
+  justify-items: start;
+  gap: 3px;
+  min-width: 0;
+  text-align: left;
+  background: #f8fafc;
+  color: var(--ink);
+}
+
+.game-history-main strong,
+.game-history-main span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.game-history-date {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.game-history-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .file-button {
   display: inline-flex;
   align-items: center;
@@ -520,6 +579,50 @@ th {
 .live-input-panel,
 .live-result-panel {
   grid-column: span 6;
+}
+
+.pitch-type-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #eef4f7;
+}
+
+.pitch-type-button {
+  background: transparent;
+  color: #244250;
+  box-shadow: none;
+}
+
+.pitch-type-button.active {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(23, 107, 135, 0.24);
+}
+
+.pitch-type-tag {
+  display: inline-block;
+  margin-left: 5px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: #fff;
+  color: #475569;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.count-average-table table,
+.out-ratio-table table {
+  width: min(100%, 620px);
+}
+
+.total-row th {
+  background: #eef4f7;
 }
 
 .live-substitution-panel {
@@ -856,6 +959,16 @@ th {
   .form-row,
   .list-item {
     grid-template-columns: 1fr;
+  }
+
+  .section-heading-row,
+  .game-history-item {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .game-history-actions button {
+    flex: 1 1 88px;
   }
 
   button {

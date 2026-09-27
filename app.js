@@ -9,6 +9,19 @@ const STATE_RECORD_ID = "main";
 const ACTION_HISTORY_LIMIT = 12;
 const LEGACY_UNDO_LIMIT = 5;
 
+const pitchTypeGroups = {
+  FASTBALL: "ストレート",
+  BREAKING: "変化球",
+  UNKNOWN: "未記録",
+};
+
+const battingCountKeys = [
+  "0-0", "0-1", "0-2",
+  "1-0", "1-1", "1-2",
+  "2-0", "2-1", "2-2",
+  "3-0", "3-1", "3-2",
+];
+
 const pitchTypes = {
   called: "見逃しストライク",
   swinging: "空振りストライク",
@@ -102,6 +115,7 @@ const initialState = {
   currentGameId: null,
   screen: "home",
   statsTab: "batting",
+  selectedPitchTypeGroup: "FASTBALL",
   editingPlayerId: null,
   batterDetailPlayerId: null,
   batterDetailOpponentOrder: null,
@@ -114,6 +128,7 @@ const initialState = {
 };
 
 let state = structuredClone(initialState);
+let indexedDbSaveQueue = Promise.resolve();
 
 async function loadState() {
   let persisted = null;
@@ -146,6 +161,7 @@ function migrateState(source) {
   migrated.undoStack = migrated.undoStack || [];
   migrated.gameActionHistory = migrated.gameActionHistory || [];
   migrated.statsTab = migrated.statsTab || "batting";
+  migrated.selectedPitchTypeGroup = pitchTypeGroups[migrated.selectedPitchTypeGroup] ? migrated.selectedPitchTypeGroup : "FASTBALL";
   migrated.batterDetailPlayerId = migrated.batterDetailPlayerId || null;
   migrated.batterDetailOpponentOrder = migrated.batterDetailOpponentOrder || null;
   migrated.pendingFieldLocationResultId = migrated.pendingFieldLocationResultId || null;
@@ -204,11 +220,18 @@ function migrateState(source) {
     rbi: Number(pa.rbi || 0),
     runsScored: Number(pa.runsScored || 0),
     earnedRuns: Number(pa.earnedRuns || 0),
+    terminalCountBefore: normalizeCount(pa.terminalCountBefore),
   }));
 
   migrated.pitches = migrated.pitches.map((pitch) => {
     const pa = migrated.plateAppearances.find((item) => item.id === pitch.plateAppearanceId);
-    return { ...pitch, pitcherId: pitch.pitcherId || pa?.pitcherId || null };
+    return {
+      ...pitch,
+      pitcherId: pitch.pitcherId || pa?.pitcherId || null,
+      pitchTypeGroup: pitchTypeGroups[pitch.pitchTypeGroup] ? pitch.pitchTypeGroup : "UNKNOWN",
+      countBefore: normalizeCount(pitch.countBefore) || { balls: 0, strikes: 0 },
+      countAfter: normalizeCount(pitch.countAfter) || normalizeCount(pitch.countBefore) || { balls: 0, strikes: 0 },
+    };
   });
 
   migrated.battingResults = migrated.battingResults.map((result) => {
@@ -224,6 +247,7 @@ function migrateState(source) {
       rbi: Number(result.rbi ?? (result.battingSide === "self" ? result.runs || 0 : 0)),
       runsScored: Number(result.runsScored ?? (result.battingSide === "self" ? result.runs || 0 : 0)),
       earnedRuns: Number(result.earnedRuns ?? (result.battingSide === "opponent" ? result.runs || 0 : 0)),
+      countBefore: normalizeCount(result.countBefore),
     };
   });
 
@@ -251,18 +275,23 @@ function saveState() {
     console.warn("localStorageへの保存に失敗しました", error);
   }
 
-  writeStateToIndexedDb(compactStateForIndexedDb(state)).then(() => {
-    state.lastDbError = "";
-  }).catch((error) => {
-    state.lastDbError = errorMessage(error);
-    state.lastError = `IndexedDBへの保存に失敗しました: ${state.lastDbError}`;
-    console.warn("IndexedDBへの保存に失敗しました", error);
-    try {
-      render();
-    } catch (renderError) {
-      console.error(renderError);
-    }
-  });
+  const indexedDbSnapshot = compactStateForIndexedDb(state);
+  indexedDbSaveQueue = indexedDbSaveQueue
+    .catch(() => undefined)
+    .then(() => writeStateToIndexedDb(indexedDbSnapshot))
+    .then(() => {
+      state.lastDbError = "";
+    })
+    .catch((error) => {
+      state.lastDbError = errorMessage(error);
+      state.lastError = `IndexedDBへの保存に失敗しました: ${state.lastDbError}`;
+      console.warn("IndexedDBへの保存に失敗しました", error);
+      try {
+        render();
+      } catch (renderError) {
+        console.error(renderError);
+      }
+    });
 
   return { localStorageError };
 }
@@ -416,6 +445,17 @@ function repairGameState(source, game) {
 function errorMessage(error) {
   if (!error) return "不明なエラー";
   return error.message || String(error);
+}
+
+function normalizeCount(count) {
+  if (!count || typeof count !== "object") return null;
+  const balls = Number(count.balls);
+  const strikes = Number(count.strikes);
+  if (!Number.isFinite(balls) || !Number.isFinite(strikes)) return null;
+  return {
+    balls: Math.max(0, Math.min(3, balls)),
+    strikes: Math.max(0, Math.min(2, strikes)),
+  };
 }
 
 function pushActionHistory(draft, beforeState, actionType, gameId, related = {}) {
@@ -586,6 +626,7 @@ function recordPitch(type) {
       pitcherName: pa.pitcherName,
       type,
       label: pitchTypes[type],
+      pitchTypeGroup: pitchTypeGroups[draft.selectedPitchTypeGroup] ? draft.selectedPitchTypeGroup : "UNKNOWN",
       countBefore: before,
       countAfter: { balls: targetGame.balls, strikes: targetGame.strikes },
       createdAt: new Date().toISOString(),
@@ -638,6 +679,7 @@ function submitResult(type) {
       type: "result",
       label: resultTypes[type].label,
       resultType: type,
+      pitchTypeGroup: pitchTypeGroups[draft.selectedPitchTypeGroup] ? draft.selectedPitchTypeGroup : "UNKNOWN",
       countBefore: before,
       countAfter: before,
       createdAt: new Date().toISOString(),
@@ -653,6 +695,8 @@ function submitResult(type) {
 function finishPlateAppearance(draft, game, type, runs) {
   const pa = ensurePlateAppearance(draft, game);
   const meta = resultTypes[type];
+  const terminalPitch = [...draft.pitches].reverse().find((pitch) => pitch.plateAppearanceId === pa.id);
+  const countBefore = normalizeCount(terminalPitch?.countBefore) || { balls: game.balls, strikes: game.strikes };
   const battingTeamType = pa.battingTeamType || pa.battingSide;
   const rbi = runs;
   const runsScored = runs;
@@ -677,6 +721,7 @@ function finishPlateAppearance(draft, game, type, runs) {
     runsScored,
     earnedRuns,
     outsAdded,
+    countBefore,
     createdAt: new Date().toISOString(),
   };
 
@@ -686,6 +731,7 @@ function finishPlateAppearance(draft, game, type, runs) {
   pa.rbi = rbi;
   pa.runsScored = runsScored;
   pa.earnedRuns = earnedRuns;
+  pa.terminalCountBefore = countBefore;
 
   if (battingTeamType === "self") game.selfScore += runs;
   else game.opponentScore += runs;
@@ -861,6 +907,47 @@ function pickGame(id) {
   setState((prev) => ({ ...prev, currentGameId: id, screen: "live" }));
 }
 
+function openGameScreen(id, screen) {
+  setState((prev) => ({ ...prev, currentGameId: id, screen }));
+}
+
+function sortedGames() {
+  const gameDateValue = (game) => {
+    const parsed = new Date(game.createdAt || game.endedAt || 0).getTime();
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  };
+  return [...state.games].sort((a, b) => gameDateValue(b) - gameDateValue(a));
+}
+
+function deleteGame(id) {
+  const game = state.games.find((item) => item.id === id);
+  if (!game) return;
+  const confirmed = confirm(`「${game.name}」を削除しますか？\n\nこの操作を行うと、この試合の投球・打席・速報・集計データも削除され、元に戻すことはできません。`);
+  if (!confirmed) return;
+
+  setState((prev) => {
+    const pendingResult = prev.battingResults.find((result) => result.id === prev.pendingFieldLocationResultId);
+    const remainingGames = prev.games.filter((item) => item.id !== id);
+    return {
+      ...prev,
+      games: remainingGames,
+      gameLineups: prev.gameLineups.filter((item) => item.gameId !== id),
+      plateAppearances: prev.plateAppearances.filter((item) => item.gameId !== id),
+      pitches: prev.pitches.filter((item) => item.gameId !== id),
+      battingResults: prev.battingResults.filter((item) => item.gameId !== id),
+      substitutions: prev.substitutions.filter((item) => item.gameId !== id),
+      gameEvents: prev.gameEvents.filter((item) => item.gameId !== id),
+      gameActionHistory: [],
+      undoStack: [],
+      currentGameId: prev.currentGameId === id ? (remainingGames[0]?.id || null) : prev.currentGameId,
+      pendingFieldLocationResultId: pendingResult?.gameId === id ? null : prev.pendingFieldLocationResultId,
+      batterDetailPlayerId: null,
+      batterDetailOpponentOrder: null,
+      screen: "gameHistory",
+    };
+  }, "game_delete");
+}
+
 function resetDemoData() {
   if (!confirm("保存済みデータをすべて削除しますか？")) return;
   localStorage.removeItem(STORAGE_KEY);
@@ -872,6 +959,13 @@ function resetDemoData() {
 
 function setStatsTab(tabName) {
   setState((prev) => ({ ...prev, statsTab: tabName }));
+}
+
+function setPitchTypeGroup(group) {
+  if (!pitchTypeGroups[group] || group === "UNKNOWN") return;
+  if (state.selectedPitchTypeGroup === group) return;
+  state = { ...state, selectedPitchTypeGroup: group, lastActionType: "pitch_type_group_select" };
+  render();
 }
 
 function endCurrentGame() {
@@ -1456,10 +1550,12 @@ function screenHtml() {
   if (state.screen === "orderEdit") return orderEditHtml();
   if (state.screen === "timeline") return timelineHtml();
   if (state.screen === "stats") return statsHtml();
+  if (state.screen === "gameHistory") return gameHistoryHtml();
   return homeHtml();
 }
 
 function homeHtml() {
+  const recentGames = sortedGames().slice(0, 5);
   return `
     <div class="grid">
       <section class="section span-8">
@@ -1474,7 +1570,7 @@ function homeHtml() {
       <section class="section span-4">
         <h3>最近の試合</h3>
         <div class="list">
-          ${state.games.slice(0, 5).map((game) => `
+          ${recentGames.map((game) => `
             <div class="list-item">
               <div>
                 <strong>${escapeHtml(game.name)}</strong><br>
@@ -1484,8 +1580,53 @@ function homeHtml() {
             </div>
           `).join("") || `<p class="muted">まだ試合がありません。</p>`}
         </div>
+        <button class="secondary history-button" data-screen="gameHistory">すべての試合を見る</button>
+      </section>
+      ${countBattingAverageHtml()}
+    </div>
+  `;
+}
+
+function gameHistoryHtml() {
+  const games = sortedGames();
+  return `
+    <div class="grid">
+      <section class="section span-12">
+        <div class="section-heading-row">
+          <div>
+            <h2>試合履歴</h2>
+            <p class="muted">保存済みの全試合です。試合を開くとランニングスコア、速報、集計を確認できます。</p>
+          </div>
+          <button class="secondary" data-screen="home">ホームへ戻る</button>
+        </div>
+        <div class="game-history-list">
+          ${games.map((game) => gameHistoryItemHtml(game)).join("") || `<p class="muted">まだ試合がありません。</p>`}
+        </div>
       </section>
     </div>
+  `;
+}
+
+function gameHistoryItemHtml(game) {
+  const createdAt = game.createdAt ? new Date(game.createdAt) : null;
+  const date = createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt.toLocaleDateString("ja-JP") : "日付不明";
+  const score = game.battingOrder === "top"
+    ? `自チーム ${game.selfScore} - ${game.opponentScore} 相手チーム`
+    : `相手チーム ${game.opponentScore} - ${game.selfScore} 自チーム`;
+  return `
+    <article class="game-history-item">
+      <button class="game-history-main" data-open-game-screen="live" data-game-id="${escapeAttr(game.id)}">
+        <span class="game-history-date">${escapeHtml(date)}</span>
+        <strong>${escapeHtml(game.name)}</strong>
+        <span>${escapeHtml(score)}</span>
+        <span class="muted">${gameStatusLabel(game)}</span>
+      </button>
+      <div class="game-history-actions">
+        <button class="secondary" data-open-game-screen="timeline" data-game-id="${escapeAttr(game.id)}">速報</button>
+        <button class="secondary" data-open-game-screen="stats" data-game-id="${escapeAttr(game.id)}">集計</button>
+        <button class="danger" data-delete-game="${escapeAttr(game.id)}">削除</button>
+      </div>
+    </article>
   `;
 }
 
@@ -1715,6 +1856,15 @@ function liveHtml() {
       </section>
       <section class="section live-input-panel">
         <h3>1球入力</h3>
+        <div class="pitch-type-control" aria-label="球種区分">
+          ${["FASTBALL", "BREAKING"].map((group) => `
+            <button
+              class="pitch-type-button ${state.selectedPitchTypeGroup === group ? "active" : ""}"
+              data-pitch-type-group="${group}"
+              aria-pressed="${state.selectedPitchTypeGroup === group ? "true" : "false"}"
+            >${pitchTypeGroups[group]}</button>
+          `).join("")}
+        </div>
         <div class="button-grid">
           <button class="primary" data-pitch="called">見逃しストライク</button>
           <button class="primary" data-pitch="swinging">空振りストライク</button>
@@ -1834,7 +1984,7 @@ function batterPlateAppearanceCard(pa, game, plateNumber) {
       </summary>
       <div class="pitch-detail">
         <div class="muted">投球内容</div>
-        ${pitches.length ? pitches.map((pitch, index) => `<div>${index + 1}球目　${pitch.label}</div>`).join("") : `<div class="muted">投球記録なし</div>`}
+        ${pitches.length ? pitches.map((pitch, index) => `<div>${index + 1}球目　${pitch.label} <span class="pitch-type-tag">${pitchTypeGroupLabel(pitch.pitchTypeGroup)}</span></div>`).join("") : `<div class="muted">投球記録なし</div>`}
       </div>
     </details>
   `;
@@ -2076,7 +2226,7 @@ function plateAppearanceCard(pa, game) {
       </summary>
       <div class="pitch-detail">
         <div class="muted">投球内容</div>
-        ${pitches.length ? pitches.map((pitch, index) => `<div>${index + 1}球目　${pitch.label}</div>`).join("") : `<div class="muted">投球記録なし</div>`}
+        ${pitches.length ? pitches.map((pitch, index) => `<div>${index + 1}球目　${pitch.label} <span class="pitch-type-tag">${pitchTypeGroupLabel(pitch.pitchTypeGroup)}</span></div>`).join("") : `<div class="muted">投球記録なし</div>`}
       </div>
     </details>
   `;
@@ -2110,7 +2260,7 @@ function pitchTimeline(pitch) {
   return `
     <div class="timeline-item">
       <strong>${pitch.label}</strong>
-      <div class="muted">${pa ? `${pa.inning}回${halfLabel(pa.half)} ${playerName(pa.batterId)}` : ""} / 投手 ${pitch.pitcherName || playerName(pitch.pitcherId, "なし")} / ${pitch.countBefore.balls}-${pitch.countBefore.strikes} → ${pitch.countAfter.balls}-${pitch.countAfter.strikes}</div>
+      <div class="muted">${pa ? `${pa.inning}回${halfLabel(pa.half)} ${playerName(pa.batterId)}` : ""} / 投手 ${pitch.pitcherName || playerName(pitch.pitcherId, "なし")} / ${pitchTypeGroupLabel(pitch.pitchTypeGroup)} / ${pitch.countBefore.balls}-${pitch.countBefore.strikes} → ${pitch.countAfter.balls}-${pitch.countAfter.strikes}</div>
     </div>
   `;
 }
@@ -2231,7 +2381,96 @@ function battingStatsHtml(game) {
         </table>
       </div>
     </section>
+    ${outRatioHtml(game)}
   `;
+}
+
+function countBattingAverageHtml() {
+  const rows = teamCountBattingRows();
+  return `
+    <section class="section span-12">
+      <h3>チーム全体 カウント別打率（全試合累積）</h3>
+      <p class="muted">自チームの打撃結果が確定する投球の直前カウントで集計しています。</p>
+      <div class="table-wrap count-average-table">
+        <table>
+          <thead><tr><th>カウント</th><th>打数</th><th>安打</th><th>打率</th></tr></thead>
+          <tbody>${rows.map((row) => `<tr><td>${row.count}</td><td>${row.atBats}</td><td>${row.hits}</td><td>${formatRate(row.avg)}</td></tr>`).join("")}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function teamCountBattingRows() {
+  const lastPitchByPlateAppearance = new Map();
+  for (const pitch of state.pitches) {
+    if (pitch.plateAppearanceId) lastPitchByPlateAppearance.set(pitch.plateAppearanceId, pitch);
+  }
+  const plateAppearanceById = new Map(state.plateAppearances.map((pa) => [pa.id, pa]));
+  const buckets = new Map(battingCountKeys.map((count) => [count, { count, atBats: 0, hits: 0, avg: null }]));
+
+  for (const result of state.battingResults) {
+    if (result.battingTeamType !== "self" || !resultTypes[result.type]?.ab) continue;
+    const pa = plateAppearanceById.get(result.plateAppearanceId);
+    const terminalPitch = lastPitchByPlateAppearance.get(result.plateAppearanceId);
+    const countBefore = normalizeCount(result.countBefore)
+      || normalizeCount(pa?.terminalCountBefore)
+      || normalizeCount(terminalPitch?.countBefore);
+    if (!countBefore) continue;
+    const key = `${countBefore.balls}-${countBefore.strikes}`;
+    const bucket = buckets.get(key);
+    if (!bucket) continue;
+    bucket.atBats += 1;
+    if (resultTypes[result.type]?.hit) bucket.hits += 1;
+  }
+
+  return battingCountKeys.map((key) => {
+    const row = buckets.get(key);
+    return { ...row, avg: row.atBats ? row.hits / row.atBats : null };
+  });
+}
+
+function outRatioHtml(game) {
+  const rows = outRatioRows(game);
+  const total = rows.reduce((sumValue, row) => sumValue + row.outs, 0);
+  return `
+    <section class="section span-12">
+      <h3>この試合のアウト比率（自チーム攻撃）</h3>
+      <div class="table-wrap out-ratio-table">
+        <table>
+          <thead><tr><th>アウト種類</th><th>アウト数</th><th>比率</th></tr></thead>
+          <tbody>
+            ${rows.map((row) => `<tr><td>${row.label}</td><td>${row.outs}</td><td>${total ? formatPercent(row.outs / total) : "-"}</td></tr>`).join("")}
+            <tr class="total-row"><th>合計</th><th>${total}</th><th>${total ? "100.0%" : "-"}</th></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function outRatioRows(game) {
+  const counts = { strikeout: 0, groundout: 0, flyout: 0, other: 0 };
+  const results = state.battingResults.filter((result) => result.gameId === game.id && result.battingTeamType === "self");
+  for (const result of results) {
+    const fallbackOuts = resultTypes[result.type]?.outs ?? (resultTypes[result.type]?.out ? 1 : 0);
+    const outs = Math.max(0, Number(result.outsAdded ?? fallbackOuts));
+    if (!outs) continue;
+    if (isStrikeoutResult(result)) counts.strikeout += outs;
+    else if (result.type === "groundout") counts.groundout += outs;
+    else if (result.type === "flyout" || result.type === "lineout") counts.flyout += outs;
+    else counts.other += outs;
+  }
+  counts.other += state.gameEvents
+    .filter((event) => event.gameId === game.id && event.battingTeamType === "self")
+    .reduce((total, event) => total + Math.max(0, Number(event.outsAdded || 0)), 0);
+
+  return [
+    { label: "三振", outs: counts.strikeout },
+    { label: "ゴロアウト", outs: counts.groundout },
+    { label: "フライアウト", outs: counts.flyout },
+    { label: "その他", outs: counts.other },
+  ];
 }
 
 function pitchingStatsHtml(game) {
@@ -2491,6 +2730,10 @@ function isBallPitch(pitch) {
   return pitch.type === "result" && ["walk", "hbp"].includes(pitch.resultType);
 }
 
+function pitchTypeGroupLabel(group) {
+  return pitchTypeGroups[group] || pitchTypeGroups.UNKNOWN;
+}
+
 function sum(items, key) {
   return items.reduce((total, item) => total + Number(item[key] || 0), 0);
 }
@@ -2549,6 +2792,15 @@ function bindEvents() {
   document.querySelector("[data-cancel-edit]")?.addEventListener("click", () => setState((prev) => ({ ...prev, editingPlayerId: null })));
   document.querySelectorAll("[data-pick-game]").forEach((button) => {
     button.addEventListener("click", () => pickGame(button.dataset.pickGame));
+  });
+  document.querySelectorAll("[data-open-game-screen]").forEach((button) => {
+    button.addEventListener("click", () => openGameScreen(button.dataset.gameId, button.dataset.openGameScreen));
+  });
+  document.querySelectorAll("[data-delete-game]").forEach((button) => {
+    button.addEventListener("click", () => deleteGame(button.dataset.deleteGame));
+  });
+  document.querySelectorAll("[data-pitch-type-group]").forEach((button) => {
+    button.addEventListener("click", () => setPitchTypeGroup(button.dataset.pitchTypeGroup));
   });
   document.querySelectorAll("[data-pitch]").forEach((button) => {
     button.addEventListener("click", () => recordPitch(button.dataset.pitch));
