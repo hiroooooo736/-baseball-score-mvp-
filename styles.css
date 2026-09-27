@@ -230,14 +230,6 @@ select {
   margin-bottom: 10px;
 }
 
-.player-form-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.45fr) auto;
-  gap: 8px;
-  align-items: end;
-  margin-bottom: 10px;
-}
-
 .form-stack {
   display: grid;
   gap: 10px;
@@ -259,33 +251,154 @@ select {
   background: #fff;
 }
 
-.player-open-button {
-  display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) auto;
-  gap: 8px;
+.players-management h2 {
+  margin-bottom: 12px;
+}
+
+.player-register-button {
+  width: 100%;
+  min-height: 56px;
+  font-size: 18px;
+}
+
+.players-list-heading {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 18px 0 10px;
+}
+
+.players-list-heading h3 {
+  margin: 0;
+}
+
+.player-card-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.player-card {
+  position: relative;
   min-width: 0;
-  padding: 8px 10px;
+  min-height: 104px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.player-card-main {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 6px;
+  width: 100%;
+  min-height: 104px;
+  padding: 14px 50px 14px 14px;
   text-align: left;
   background: #f8fafc;
   color: var(--ink);
 }
 
-.player-open-button strong,
-.player-open-button small {
-  display: block;
+.player-card-main strong {
+  font-size: 17px;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
-.player-open-button small,
-.player-list-index,
-.player-open-label {
+.player-card-main span {
   color: var(--muted);
+  font-weight: 800;
 }
 
-.player-open-label {
-  font-size: 13px;
+.player-card-menu {
+  position: absolute;
+  z-index: 2;
+  top: 6px;
+  right: 6px;
+}
+
+.player-card-menu[open] {
+  z-index: 20;
+}
+
+.player-card-menu summary {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 8px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 24px;
   font-weight: 800;
+}
+
+.player-card-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.player-card-menu summary:hover,
+.player-card-menu summary:focus-visible {
+  background: #e8eef3;
+}
+
+.player-card-menu-panel {
+  position: absolute;
+  top: 46px;
+  right: 0;
+  display: grid;
+  gap: 4px;
+  width: 128px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 26px rgba(16, 38, 50, 0.18);
+}
+
+.player-card-menu-panel button {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 10px;
+  text-align: left;
+  background: #fff;
+  color: var(--ink);
+}
+
+.player-card-menu-panel .player-menu-delete {
+  color: var(--danger);
+}
+
+.player-empty-state {
+  grid-column: 1 / -1;
+}
+
+.player-editor-backdrop {
+  z-index: 70;
+}
+
+.player-editor-modal {
+  width: min(520px, 100%);
+  max-height: min(88vh, 700px);
+  overflow: auto;
+  border-radius: 10px;
+  background: #fff;
+  padding: 16px;
+  box-shadow: 0 18px 48px rgba(16, 38, 50, 0.28);
+}
+
+.player-editor-form {
+  display: grid;
+  gap: 12px;
+}
+
+.player-editor-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 .player-profile-header {
@@ -1062,7 +1175,6 @@ th {
     grid-template-columns: 1fr;
   }
 
-  .player-form-grid,
   .player-profile-header {
     display: grid;
     grid-template-columns: 1fr;
@@ -1070,10 +1182,6 @@ th {
 
   .career-stat-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .player-open-button {
-    grid-template-columns: 30px minmax(0, 1fr) auto;
   }
 
   .section-heading-row,
@@ -1091,6 +1199,18 @@ th {
   }
 
   .debug-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 719px) {
+  .player-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 419px) {
+  .player-card-grid {
     grid-template-columns: 1fr;
   }
 }

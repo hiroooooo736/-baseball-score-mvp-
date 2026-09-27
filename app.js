@@ -117,6 +117,7 @@ const initialState = {
   statsTab: "batting",
   selectedPitchTypeGroup: "FASTBALL",
   editingPlayerId: null,
+  playerEditorOpen: false,
   playerDetailId: null,
   batterDetailPlayerId: null,
   batterDetailOpponentOrder: null,
@@ -162,6 +163,7 @@ function migrateState(source) {
   migrated.undoStack = migrated.undoStack || [];
   migrated.gameActionHistory = migrated.gameActionHistory || [];
   migrated.statsTab = migrated.statsTab || "batting";
+  migrated.playerEditorOpen = false;
   migrated.playerDetailId = migrated.playerDetailId || null;
   migrated.selectedPitchTypeGroup = pitchTypeGroups[migrated.selectedPitchTypeGroup] ? migrated.selectedPitchTypeGroup : "FASTBALL";
   migrated.batterDetailPlayerId = migrated.batterDetailPlayerId || null;
@@ -897,13 +899,30 @@ function savePlayer(event) {
         ...prev,
         players: prev.players.map((player) => player.id === prev.editingPlayerId ? { ...player, name, jerseyNumber } : player),
         editingPlayerId: null,
+        playerEditorOpen: false,
       };
     }
     return {
       ...prev,
       players: [...prev.players, { id: uid("player"), name, jerseyNumber, createdAt: new Date().toISOString() }],
+      editingPlayerId: null,
+      playerEditorOpen: false,
     };
   });
+}
+
+function openPlayerEditor(id = null) {
+  if (id && !state.players.some((player) => player.id === id)) return;
+  setState((prev) => ({
+    ...prev,
+    editingPlayerId: id,
+    playerEditorOpen: true,
+    screen: "players",
+  }), id ? "open_player_edit" : "open_player_create");
+}
+
+function closePlayerEditor() {
+  setState((prev) => ({ ...prev, editingPlayerId: null, playerEditorOpen: false }), "close_player_editor");
 }
 
 function deletePlayer(id) {
@@ -1654,9 +1673,45 @@ function playersHtml() {
   const editing = state.players.find((player) => player.id === state.editingPlayerId);
   return `
     <div class="grid">
-      <section class="section span-6">
-        <h2>選手登録</h2>
-        <form id="playerForm" class="player-form-grid">
+      <section class="section span-12 players-management">
+        <h2>選手管理</h2>
+        <button class="primary player-register-button" type="button" data-open-player-editor="1">＋ 選手登録</button>
+        <div class="players-list-heading">
+          <h3>登録選手</h3>
+          <span class="muted">${state.players.length}名</span>
+        </div>
+        <div class="player-card-grid">
+          ${state.players.map((player) => `
+            <article class="player-card">
+              <button class="player-card-main" type="button" data-player-detail="${escapeAttr(player.id)}">
+                <strong>${escapeHtml(player.name)}</strong>
+                <span>${player.jerseyNumber ? `#${escapeHtml(player.jerseyNumber)}` : "背番号未登録"}</span>
+              </button>
+              <details class="player-card-menu">
+                <summary aria-label="${escapeAttr(player.name)}の操作">&#8942;</summary>
+                <div class="player-card-menu-panel">
+                  <button class="player-menu-edit" type="button" aria-label="${escapeAttr(player.name)}を編集" data-edit-player="${escapeAttr(player.id)}">編集</button>
+                  <button class="player-menu-delete" type="button" aria-label="${escapeAttr(player.name)}を削除" data-delete-player="${escapeAttr(player.id)}">削除</button>
+                </div>
+              </details>
+            </article>
+          `).join("") || `<p class="muted player-empty-state">選手を登録してください。</p>`}
+        </div>
+      </section>
+      ${state.playerEditorOpen ? playerEditorModalHtml(editing) : ""}
+    </div>
+  `;
+}
+
+function playerEditorModalHtml(editing) {
+  return `
+    <div class="modal-backdrop player-editor-backdrop" data-close-player-editor-backdrop="1">
+      <section class="player-editor-modal" role="dialog" aria-modal="true" aria-labelledby="playerEditorTitle">
+        <div class="modal-header">
+          <h3 id="playerEditorTitle">${editing ? "選手編集" : "選手登録"}</h3>
+          <button class="secondary" type="button" data-close-player-editor="1" aria-label="選手登録画面を閉じる">閉じる</button>
+        </div>
+        <form id="playerForm" class="player-editor-form">
           <label>
             氏名
             <input name="playerName" value="${editing ? escapeAttr(editing.name) : ""}" placeholder="例：山田 太郎" required>
@@ -1665,30 +1720,11 @@ function playersHtml() {
             背番号（任意）
             <input name="jerseyNumber" value="${editing ? escapeAttr(editing.jerseyNumber || "") : ""}" inputmode="numeric" placeholder="例：10">
           </label>
-          <button class="primary" type="submit">${editing ? "更新" : "登録"}</button>
+          <div class="player-editor-actions">
+            <button class="secondary" type="button" data-close-player-editor="1">キャンセル</button>
+            <button class="primary" type="submit">${editing ? "更新" : "登録"}</button>
+          </div>
         </form>
-        ${editing ? `<button class="secondary" data-cancel-edit="1">編集をやめる</button>` : ""}
-      </section>
-      <section class="section span-6">
-        <h2>登録選手</h2>
-        <div class="list">
-          ${state.players.map((player, index) => `
-            <div class="list-item">
-              <button class="player-open-button" data-player-detail="${escapeAttr(player.id)}">
-                <span class="player-list-index">${index + 1}</span>
-                <span>
-                  <strong>${escapeHtml(player.name)}</strong>
-                  ${player.jerseyNumber ? `<small>背番号 ${escapeHtml(player.jerseyNumber)}</small>` : ""}
-                </span>
-                <span class="player-open-label">個人成績</span>
-              </button>
-              <div class="actions">
-                <button class="secondary" data-edit-player="${player.id}">編集</button>
-                <button class="danger" data-delete-player="${player.id}">削除</button>
-              </div>
-            </div>
-          `).join("") || `<p class="muted">選手を登録してください。</p>`}
-        </div>
       </section>
     </div>
   `;
@@ -2896,23 +2932,25 @@ function bindEvents() {
   document.querySelector("#playerForm")?.addEventListener("submit", savePlayer);
   document.querySelector("#gameForm")?.addEventListener("submit", createGame);
   document.querySelector("#orderEditForm")?.addEventListener("submit", saveOrderEdit);
+  document.querySelector("[data-open-player-editor]")?.addEventListener("click", () => openPlayerEditor());
   document.querySelectorAll("[data-edit-player]").forEach((button) => {
-    button.addEventListener("click", () => setState((prev) => ({ ...prev, editingPlayerId: button.dataset.editPlayer })));
+    button.addEventListener("click", () => openPlayerEditor(button.dataset.editPlayer));
   });
   document.querySelectorAll("[data-player-detail]").forEach((button) => {
     button.addEventListener("click", () => openPlayerDetail(button.dataset.playerDetail));
   });
   document.querySelectorAll("[data-edit-player-from-detail]").forEach((button) => {
-    button.addEventListener("click", () => setState((prev) => ({
-      ...prev,
-      editingPlayerId: button.dataset.editPlayerFromDetail,
-      screen: "players",
-    }), "edit_player_from_detail"));
+    button.addEventListener("click", () => openPlayerEditor(button.dataset.editPlayerFromDetail));
   });
   document.querySelectorAll("[data-delete-player]").forEach((button) => {
     button.addEventListener("click", () => deletePlayer(button.dataset.deletePlayer));
   });
-  document.querySelector("[data-cancel-edit]")?.addEventListener("click", () => setState((prev) => ({ ...prev, editingPlayerId: null })));
+  document.querySelectorAll("[data-close-player-editor]").forEach((button) => {
+    button.addEventListener("click", closePlayerEditor);
+  });
+  document.querySelector("[data-close-player-editor-backdrop]")?.addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) closePlayerEditor();
+  });
   document.querySelectorAll("[data-pick-game]").forEach((button) => {
     button.addEventListener("click", () => pickGame(button.dataset.pickGame));
   });
