@@ -2431,17 +2431,23 @@ function teamCountBattingRows() {
 }
 
 function outRatioHtml(game) {
-  const rows = outRatioRows(game);
-  const total = rows.reduce((sumValue, row) => sumValue + row.outs, 0);
+  const selfRows = outRatioRows(game, "self");
+  const opponentRows = outRatioRows(game, "opponent");
+  const selfTotal = selfRows.reduce((sumValue, row) => sumValue + row.outs, 0);
+  const opponentTotal = opponentRows.reduce((sumValue, row) => sumValue + row.outs, 0);
   return `
     <section class="section span-12">
-      <h3>この試合のアウト比率（自チーム攻撃）</h3>
+      <h3>この試合のアウト比率</h3>
+      <p class="muted">各チームの攻撃時に記録されたアウト数を比較しています。</p>
       <div class="table-wrap out-ratio-table">
         <table>
-          <thead><tr><th>アウト種類</th><th>アウト数</th><th>比率</th></tr></thead>
+          <thead><tr><th>アウト種類</th><th>自チーム</th><th>相手チーム</th></tr></thead>
           <tbody>
-            ${rows.map((row) => `<tr><td>${row.label}</td><td>${row.outs}</td><td>${total ? formatPercent(row.outs / total) : "-"}</td></tr>`).join("")}
-            <tr class="total-row"><th>合計</th><th>${total}</th><th>${total ? "100.0%" : "-"}</th></tr>
+            ${selfRows.map((selfRow, index) => {
+              const opponentRow = opponentRows[index];
+              return `<tr><td>${selfRow.label}</td><td>${outRatioCell(selfRow.outs, selfTotal)}</td><td>${outRatioCell(opponentRow.outs, opponentTotal)}</td></tr>`;
+            }).join("")}
+            <tr class="total-row"><th>合計</th><th>${outRatioTotalCell(selfTotal)}</th><th>${outRatioTotalCell(opponentTotal)}</th></tr>
           </tbody>
         </table>
       </div>
@@ -2449,9 +2455,18 @@ function outRatioHtml(game) {
   `;
 }
 
-function outRatioRows(game) {
+function outRatioCell(outs, total) {
+  return total ? `${outs}（${formatPercent(outs / total)}）` : `${outs}（-）`;
+}
+
+function outRatioTotalCell(total) {
+  return total ? `${total}（100.0%）` : `${total}（-）`;
+}
+
+function outRatioRows(game, battingTeamType) {
+  if (!["self", "opponent"].includes(battingTeamType)) throw new Error("集計対象のチーム種別が不正です。");
   const counts = { strikeout: 0, groundout: 0, flyout: 0, other: 0 };
-  const results = state.battingResults.filter((result) => result.gameId === game.id && result.battingTeamType === "self");
+  const results = state.battingResults.filter((result) => result.gameId === game.id && result.battingTeamType === battingTeamType);
   for (const result of results) {
     const fallbackOuts = resultTypes[result.type]?.outs ?? (resultTypes[result.type]?.out ? 1 : 0);
     const outs = Math.max(0, Number(result.outsAdded ?? fallbackOuts));
@@ -2462,7 +2477,7 @@ function outRatioRows(game) {
     else counts.other += outs;
   }
   counts.other += state.gameEvents
-    .filter((event) => event.gameId === game.id && event.battingTeamType === "self")
+    .filter((event) => event.gameId === game.id && event.battingTeamType === battingTeamType)
     .reduce((total, event) => total + Math.max(0, Number(event.outsAdded || 0)), 0);
 
   return [
