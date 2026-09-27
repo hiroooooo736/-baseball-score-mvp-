@@ -230,6 +230,14 @@ select {
   margin-bottom: 10px;
 }
 
+.player-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.45fr) auto;
+  gap: 8px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
 .form-stack {
   display: grid;
   gap: 10px;
@@ -249,6 +257,99 @@ select {
   border-radius: 8px;
   padding: 10px;
   background: #fff;
+}
+
+.player-open-button {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  text-align: left;
+  background: #f8fafc;
+  color: var(--ink);
+}
+
+.player-open-button strong,
+.player-open-button small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.player-open-button small,
+.player-list-index,
+.player-open-label {
+  color: var(--muted);
+}
+
+.player-open-label {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.player-profile-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.player-profile-header h2 {
+  margin: 4px 0 6px;
+}
+
+.player-profile-header p {
+  margin: 0;
+}
+
+.player-number-badge {
+  display: inline-block;
+  border: 1px solid #9fb1bf;
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: #eef4f7;
+  color: #244250;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.career-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(100px, 1fr));
+  gap: 8px;
+}
+
+.career-stat {
+  min-height: 78px;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.career-stat span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.career-stat strong {
+  font-size: 22px;
+  overflow-wrap: anywhere;
+}
+
+.empty-career-message {
+  margin: 0;
+  border: 1px dashed #94a3b8;
+  border-radius: 8px;
+  padding: 18px;
+  color: var(--muted);
+  text-align: center;
+  font-weight: 700;
 }
 
 .actions {
@@ -959,6 +1060,20 @@ th {
   .form-row,
   .list-item {
     grid-template-columns: 1fr;
+  }
+
+  .player-form-grid,
+  .player-profile-header {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .career-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .player-open-button {
+    grid-template-columns: 30px minmax(0, 1fr) auto;
   }
 
   .section-heading-row,

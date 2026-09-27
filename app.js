@@ -117,6 +117,7 @@ const initialState = {
   statsTab: "batting",
   selectedPitchTypeGroup: "FASTBALL",
   editingPlayerId: null,
+  playerDetailId: null,
   batterDetailPlayerId: null,
   batterDetailOpponentOrder: null,
   pendingFieldLocationResultId: null,
@@ -161,6 +162,7 @@ function migrateState(source) {
   migrated.undoStack = migrated.undoStack || [];
   migrated.gameActionHistory = migrated.gameActionHistory || [];
   migrated.statsTab = migrated.statsTab || "batting";
+  migrated.playerDetailId = migrated.playerDetailId || null;
   migrated.selectedPitchTypeGroup = pitchTypeGroups[migrated.selectedPitchTypeGroup] ? migrated.selectedPitchTypeGroup : "FASTBALL";
   migrated.batterDetailPlayerId = migrated.batterDetailPlayerId || null;
   migrated.batterDetailOpponentOrder = migrated.batterDetailOpponentOrder || null;
@@ -169,6 +171,11 @@ function migrateState(source) {
   migrated.lastError = migrated.lastError || "";
   migrated.lastDbError = migrated.lastDbError || "";
   migrated.lastSavedAt = migrated.lastSavedAt || "";
+
+  migrated.players = (migrated.players || []).map((player) => ({
+    ...player,
+    jerseyNumber: player.jerseyNumber ? String(player.jerseyNumber) : "",
+  }));
 
   migrated.gameLineups = migrated.gameLineups.map((lineup) => ({
     ...lineup,
@@ -881,26 +888,37 @@ function savePlayer(event) {
   event.preventDefault();
   const input = event.currentTarget.querySelector("[name='playerName']");
   const name = input.value.trim();
+  const jerseyNumber = String(event.currentTarget.querySelector("[name='jerseyNumber']")?.value || "").trim();
   if (!name) return;
 
   setState((prev) => {
     if (prev.editingPlayerId) {
       return {
         ...prev,
-        players: prev.players.map((player) => player.id === prev.editingPlayerId ? { ...player, name } : player),
+        players: prev.players.map((player) => player.id === prev.editingPlayerId ? { ...player, name, jerseyNumber } : player),
         editingPlayerId: null,
       };
     }
     return {
       ...prev,
-      players: [...prev.players, { id: uid("player"), name, createdAt: new Date().toISOString() }],
+      players: [...prev.players, { id: uid("player"), name, jerseyNumber, createdAt: new Date().toISOString() }],
     };
   });
 }
 
 function deletePlayer(id) {
   if (!confirm("この選手を削除しますか？過去記録の選手名は「削除済み選手」表示になります。")) return;
-  setState((prev) => ({ ...prev, players: prev.players.filter((player) => player.id !== id) }));
+  setState((prev) => ({
+    ...prev,
+    players: prev.players.filter((player) => player.id !== id),
+    playerDetailId: prev.playerDetailId === id ? null : prev.playerDetailId,
+    screen: prev.playerDetailId === id ? "players" : prev.screen,
+  }));
+}
+
+function openPlayerDetail(id) {
+  if (!state.players.some((player) => player.id === id)) return;
+  setState((prev) => ({ ...prev, playerDetailId: id, screen: "playerDetail" }), "open_player_detail");
 }
 
 function pickGame(id) {
@@ -1530,7 +1548,8 @@ function render() {
   bindEvents();
 }
 function tab(screen, label) {
-  return `<button class="tab ${state.screen === screen ? "active" : ""}" data-screen="${screen}">${label}</button>`;
+  const active = state.screen === screen || (screen === "players" && state.screen === "playerDetail");
+  return `<button class="tab ${active ? "active" : ""}" data-screen="${screen}">${label}</button>`;
 }
 
 function diagnosticBannerHtml() {
@@ -1545,6 +1564,7 @@ function diagnosticBannerHtml() {
 
 function screenHtml() {
   if (state.screen === "players") return playersHtml();
+  if (state.screen === "playerDetail") return playerDetailHtml();
   if (state.screen === "newGame") return newGameHtml();
   if (state.screen === "live") return liveHtml();
   if (state.screen === "orderEdit") return orderEditHtml();
@@ -1636,10 +1656,14 @@ function playersHtml() {
     <div class="grid">
       <section class="section span-6">
         <h2>選手登録</h2>
-        <form id="playerForm" class="form-row">
+        <form id="playerForm" class="player-form-grid">
           <label>
             氏名
             <input name="playerName" value="${editing ? escapeAttr(editing.name) : ""}" placeholder="例：山田 太郎" required>
+          </label>
+          <label>
+            背番号（任意）
+            <input name="jerseyNumber" value="${editing ? escapeAttr(editing.jerseyNumber || "") : ""}" inputmode="numeric" placeholder="例：10">
           </label>
           <button class="primary" type="submit">${editing ? "更新" : "登録"}</button>
         </form>
@@ -1650,7 +1674,14 @@ function playersHtml() {
         <div class="list">
           ${state.players.map((player, index) => `
             <div class="list-item">
-              <div><strong>${index + 1}. ${escapeHtml(player.name)}</strong></div>
+              <button class="player-open-button" data-player-detail="${escapeAttr(player.id)}">
+                <span class="player-list-index">${index + 1}</span>
+                <span>
+                  <strong>${escapeHtml(player.name)}</strong>
+                  ${player.jerseyNumber ? `<small>背番号 ${escapeHtml(player.jerseyNumber)}</small>` : ""}
+                </span>
+                <span class="player-open-label">個人成績</span>
+              </button>
               <div class="actions">
                 <button class="secondary" data-edit-player="${player.id}">編集</button>
                 <button class="danger" data-delete-player="${player.id}">削除</button>
@@ -1661,6 +1692,51 @@ function playersHtml() {
       </section>
     </div>
   `;
+}
+
+function playerDetailHtml() {
+  const player = state.players.find((item) => item.id === state.playerDetailId);
+  if (!player) return `<section class="section"><h2>選手詳細</h2><p class="notice">選手が見つかりません。</p><button class="secondary" data-screen="players">選手管理へ戻る</button></section>`;
+  const batting = playerCareerBatting(player.id);
+  const pitching = playerCareerPitching(player.id);
+  return `
+    <div class="grid player-detail-page">
+      <section class="section span-12 player-profile-header">
+        <div>
+          <div class="player-number-badge">${player.jerseyNumber ? `#${escapeHtml(player.jerseyNumber)}` : "背番号未登録"}</div>
+          <h2>${escapeHtml(player.name)}</h2>
+          <p class="muted">保存されている全試合から、playerIdで正確に紐付く記録のみを集計しています。</p>
+        </div>
+        <div class="actions">
+          <button class="secondary" data-screen="players">選手管理へ戻る</button>
+          <button class="secondary" data-edit-player-from-detail="${escapeAttr(player.id)}">基本情報を編集</button>
+        </div>
+      </section>
+      <section class="section span-12">
+        <h3>通算打撃成績</h3>
+        ${careerStatsGridHtml([
+          ["試合数", batting.games], ["打席", batting.pa], ["打数", batting.ab], ["得点", batting.runs],
+          ["安打", batting.hits], ["単打", batting.single], ["二塁打", batting.double], ["三塁打", batting.triple],
+          ["本塁打", batting.homerun], ["打点", batting.rbi], ["四球", batting.walks], ["死球", batting.hbp],
+          ["三振", batting.strikeouts], ["打率", formatRate(batting.avg)], ["出塁率", formatRate(batting.obp)],
+          ["長打率", formatRate(batting.slg)], ["OPS", formatRate(batting.ops)], ["コンタクト率", formatPercent(batting.contactRate)],
+        ])}
+      </section>
+      <section class="section span-12">
+        <h3>通算投手成績</h3>
+        ${pitching.appearances ? careerStatsGridHtml([
+          ["登板数", pitching.appearances], ["投球回", pitching.innings], ["対戦打者数", pitching.batters], ["投球数", pitching.pitchCount],
+          ["被安打", pitching.hits], ["被本塁打", pitching.homerun], ["奪三振", pitching.strikeouts], ["四球", pitching.walks],
+          ["死球", pitching.hbp], ["失点", pitching.runs], ["自責点", pitching.earnedRuns],
+          ["ストライク率", formatPercent(pitching.strikeRate)], ["初球ストライク率", formatPercent(pitching.firstPitchStrikeRate)],
+        ]) : `<p class="empty-career-message">投手成績なし</p>`}
+      </section>
+    </div>
+  `;
+}
+
+function careerStatsGridHtml(items) {
+  return `<div class="career-stat-grid">${items.map(([label, value]) => `<div class="career-stat"><span>${label}</span><strong>${value}</strong></div>`).join("")}</div>`;
 }
 
 function playerOptions(selectedId = "") {
@@ -2524,41 +2600,50 @@ function battingRows(game) {
   return ids.map((playerId) => {
     const results = state.battingResults.filter((result) => result.gameId === game.id && result.battingTeamType === "self" && result.batterId === playerId);
     const events = state.gameEvents.filter((event) => event.gameId === game.id && event.battingTeamType === "self" && event.relatedPlayerId === playerId);
-    const row = {
-      name: playerName(playerId, "未設定"),
-      pa: results.length,
-      ab: results.filter((result) => resultTypes[result.type]?.ab).length,
-      hits: results.filter((result) => resultTypes[result.type]?.hit).length,
-      single: results.filter((result) => result.type === "single").length,
-      double: results.filter((result) => result.type === "double").length,
-      triple: results.filter((result) => result.type === "triple").length,
-      homerun: results.filter((result) => result.type === "homerun").length,
-      strikeouts: results.filter(isStrikeoutResult).length,
-      walks: results.filter((result) => result.type === "walk").length,
-      hbp: results.filter((result) => result.type === "hbp").length,
-      sacrifice: results.filter((result) => result.type === "sacrifice").length,
-      doubleplay: results.filter((result) => result.type === "doubleplay").length,
-      errorReach: results.filter((result) => result.type === "error").length,
-      steals: events.filter((event) => event.eventType === "steal_success").length,
-      caughtStealing: events.filter((event) => event.eventType === "caught_stealing").length,
-      rbi: sum(results, "rbi"),
-      runs: sum(results, "runsScored") + sum(events.filter((event) => event.eventType === "run_scored"), "runsAdded"),
-      totalBases: 0,
-      avg: 0,
-      obp: 0,
-      slg: 0,
-      ops: 0,
-      contactRate: 0,
-    };
-    row.totalBases = row.single + row.double * 2 + row.triple * 3 + row.homerun * 4;
-    row.avg = row.ab ? row.hits / row.ab : null;
-    const obpDenominator = row.ab + row.walks + row.hbp;
-    row.obp = obpDenominator ? (row.hits + row.walks + row.hbp) / obpDenominator : null;
-    row.slg = row.ab ? row.totalBases / row.ab : null;
-    row.ops = row.obp !== null && row.slg !== null ? row.obp + row.slg : null;
-    row.contactRate = row.pa ? (row.pa - row.strikeouts) / row.pa : null;
-    return row;
+    return buildBattingSummary(playerName(playerId, "未設定"), results, events);
   });
+}
+
+function statsGameIdSet(gameIds = null) {
+  const existingIds = new Set(state.games.map((game) => game.id));
+  if (!gameIds) return existingIds;
+  return new Set([...gameIds].filter((gameId) => existingIds.has(gameId)));
+}
+
+function playerCareerBatting(playerId, gameIds = null) {
+  const targetGameIds = statsGameIdSet(gameIds);
+  const results = state.battingResults.filter((result) => (
+    targetGameIds.has(result.gameId)
+    && result.battingTeamType === "self"
+    && result.batterId === playerId
+  ));
+  const events = state.gameEvents.filter((event) => (
+    targetGameIds.has(event.gameId)
+    && event.battingTeamType === "self"
+    && event.relatedPlayerId === playerId
+  ));
+  const appearanceGameIds = new Set([
+    ...results.map((result) => result.gameId),
+    ...events.map((event) => event.gameId),
+    ...state.gameLineups
+      .filter((lineup) => (
+        targetGameIds.has(lineup.gameId)
+        && lineup.isStarter
+        && [lineup.originalPlayerId, lineup.currentPlayerId, lineup.playerId].includes(playerId)
+      ))
+      .map((lineup) => lineup.gameId),
+    ...state.substitutions
+      .filter((substitution) => (
+        targetGameIds.has(substitution.gameId)
+        && substitution.teamType === "self"
+        && [substitution.outgoingPlayerId, substitution.incomingPlayerId].includes(playerId)
+      ))
+      .map((substitution) => substitution.gameId),
+  ]);
+  return {
+    ...buildBattingSummary(playerName(playerId, "未設定"), results, events),
+    games: appearanceGameIds.size,
+  };
 }
 
 function opponentBattingRow(game) {
@@ -2618,42 +2703,54 @@ function pitchingRows(game) {
     const results = state.battingResults.filter((result) => result.gameId === game.id && result.battingTeamType === "opponent" && result.pitcherId === pitcherId);
     const events = state.gameEvents.filter((event) => event.gameId === game.id && event.battingTeamType === "opponent" && event.pitcherId === pitcherId);
     const plateAppearances = state.plateAppearances.filter((pa) => pa.gameId === game.id && pa.battingTeamType === "opponent" && pa.pitcherId === pitcherId && pa.result);
-    const strikePitches = pitches.filter(isStrikePitch);
-    const ballPitches = pitches.filter(isBallPitch);
-    const pitchingOuts = sum(results, "outsAdded");
     const appearanceMeta = pitcherAppearanceMeta(game, pitcherId, pitches);
-    const firstPitchStrikeCount = plateAppearances.filter((pa) => {
-      const firstPitch = state.pitches
-        .filter((pitch) => pitch.plateAppearanceId === pa.id)
-        .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))[0];
-      return firstPitch ? isStrikePitch(firstPitch) : false;
-    }).length;
     return {
+      ...buildPitchingSummary(playerName(pitcherId, "未設定"), pitches, results, events, plateAppearances),
       pitcherId,
       appearanceSort: appearanceMeta.sortTime,
-      name: playerName(pitcherId, "未設定"),
       appearanceOrder: 0,
-      pitchingOuts,
-      innings: formatInnings(pitchingOuts),
-      batters: plateAppearances.length,
-      pitchCount: pitches.length,
-      called: pitches.filter((pitch) => pitch.type === "called").length,
-      swinging: pitches.filter((pitch) => pitch.type === "swinging").length,
-      ball: ballPitches.length,
-      strikeRate: pitches.length ? strikePitches.length / pitches.length : null,
-      firstPitchStrikeRate: plateAppearances.length ? firstPitchStrikeCount / plateAppearances.length : null,
-      strikeouts: results.filter(isStrikeoutResult).length,
-      walks: results.filter((result) => result.type === "walk").length,
-      hbp: results.filter((result) => result.type === "hbp").length,
-      hits: results.filter((result) => resultTypes[result.type]?.hit).length,
-      homerun: results.filter((result) => result.type === "homerun").length,
-      wildPitch: events.filter((event) => event.eventType === "wild_pitch").length,
-      balk: events.filter((event) => event.eventType === "balk").length,
-      runs: sum(results, "runs") + sum(events, "runsAdded"),
-      earnedRuns: sum(results, "earnedRuns"),
     };
   }).sort((a, b) => a.appearanceSort - b.appearanceSort)
     .map((row, index) => ({ ...row, appearanceOrder: index + 1 }));
+}
+
+function playerCareerPitching(playerId, gameIds = null) {
+  const targetGameIds = statsGameIdSet(gameIds);
+  const pitches = state.pitches.filter((pitch) => targetGameIds.has(pitch.gameId) && pitch.pitcherId === playerId);
+  const results = state.battingResults.filter((result) => (
+    targetGameIds.has(result.gameId)
+    && result.battingTeamType === "opponent"
+    && result.pitcherId === playerId
+  ));
+  const events = state.gameEvents.filter((event) => (
+    targetGameIds.has(event.gameId)
+    && event.battingTeamType === "opponent"
+    && event.pitcherId === playerId
+  ));
+  const plateAppearances = state.plateAppearances.filter((pa) => (
+    targetGameIds.has(pa.gameId)
+    && pa.battingTeamType === "opponent"
+    && pa.pitcherId === playerId
+    && pa.result
+  ));
+  const appearanceGameIds = new Set([
+    ...pitches.map((pitch) => pitch.gameId),
+    ...results.map((result) => result.gameId),
+    ...events.map((event) => event.gameId),
+    ...plateAppearances.map((pa) => pa.gameId),
+    ...state.substitutions
+      .filter((substitution) => (
+        targetGameIds.has(substitution.gameId)
+        && substitution.teamType === "self"
+        && substitution.substitutionType === "substitution_pitcher"
+        && [substitution.previousPitcherId, substitution.newPitcherId].includes(playerId)
+      ))
+      .map((substitution) => substitution.gameId),
+  ]);
+  return {
+    ...buildPitchingSummary(playerName(playerId, "未設定"), pitches, results, events, plateAppearances),
+    appearances: appearanceGameIds.size,
+  };
 }
 
 function opponentPitchingRow(game) {
@@ -2675,12 +2772,13 @@ function buildPitchingSummary(name, pitches, results, events, plateAppearances) 
       .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))[0];
     return firstPitch ? isStrikePitch(firstPitch) : false;
   }).length;
+  const pitchingOuts = sum(results, "outsAdded") + sum(events, "outsAdded");
   return {
     name,
     pitchCount: pitches.length,
     batters: plateAppearances.length,
-    pitchingOuts: sum(results, "outsAdded"),
-    innings: formatInnings(sum(results, "outsAdded")),
+    pitchingOuts,
+    innings: formatInnings(pitchingOuts),
     called: pitches.filter((pitch) => pitch.type === "called").length,
     swinging: pitches.filter((pitch) => pitch.type === "swinging").length,
     ball: ballPitches.length,
@@ -2800,6 +2898,16 @@ function bindEvents() {
   document.querySelector("#orderEditForm")?.addEventListener("submit", saveOrderEdit);
   document.querySelectorAll("[data-edit-player]").forEach((button) => {
     button.addEventListener("click", () => setState((prev) => ({ ...prev, editingPlayerId: button.dataset.editPlayer })));
+  });
+  document.querySelectorAll("[data-player-detail]").forEach((button) => {
+    button.addEventListener("click", () => openPlayerDetail(button.dataset.playerDetail));
+  });
+  document.querySelectorAll("[data-edit-player-from-detail]").forEach((button) => {
+    button.addEventListener("click", () => setState((prev) => ({
+      ...prev,
+      editingPlayerId: button.dataset.editPlayerFromDetail,
+      screen: "players",
+    }), "edit_player_from_detail"));
   });
   document.querySelectorAll("[data-delete-player]").forEach((button) => {
     button.addEventListener("click", () => deletePlayer(button.dataset.deletePlayer));
