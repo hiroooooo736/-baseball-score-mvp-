@@ -215,6 +215,46 @@ select {
   margin-top: 12px;
 }
 
+.analysis-settings {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.analysis-settings h3,
+.analysis-settings p {
+  margin: 0;
+}
+
+.analysis-settings p {
+  margin-top: 4px;
+}
+
+.analysis-toggle {
+  display: grid;
+  grid-template-columns: auto 48px auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  cursor: pointer;
+}
+
+.analysis-toggle input {
+  width: 24px;
+  height: 24px;
+  margin: 0 auto;
+  accent-color: var(--primary);
+}
+
+.analysis-toggle strong {
+  min-width: 34px;
+  color: var(--primary);
+}
+
 .primary { background: var(--primary); color: #fff; }
 .secondary { background: #e8eef3; color: #193544; }
 .success { background: var(--ok); color: #fff; }
@@ -1152,6 +1192,15 @@ th {
   .substitution-box,
   .situation-grid {
     grid-template-columns: 1fr;
+  }
+
+  .analysis-settings {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .analysis-toggle {
+    grid-template-columns: 1fr 48px auto;
   }
 
   .situation-memo {
