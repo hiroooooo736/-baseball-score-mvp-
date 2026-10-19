@@ -186,6 +186,37 @@ select {
   gap: 10px;
 }
 
+.new-game-section .form-stack {
+  width: min(100%, 900px);
+}
+
+.starting-lineup-list {
+  display: grid;
+  gap: 8px;
+}
+
+.starting-lineup-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: #f8fafc;
+}
+
+.starting-lineup-row span {
+  font-size: 16px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.starting-lineup-row select {
+  min-height: 44px;
+}
+
 .bench-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -523,6 +554,90 @@ select {
 .history-button {
   width: 100%;
   margin-top: 10px;
+}
+
+.home-rankings-section {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.home-rankings-section .section-heading-row {
+  margin-bottom: 10px;
+}
+
+.home-rankings-section .section-heading-row h2,
+.home-rankings-section .section-heading-row p {
+  margin: 0;
+}
+
+.home-rankings-section .section-heading-row p {
+  margin-top: 4px;
+}
+
+.ranking-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ranking-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+}
+
+.ranking-card h3 {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+
+.ranking-list {
+  display: grid;
+}
+
+.ranking-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  padding: 7px 4px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.ranking-row:first-child {
+  border-top: 0;
+}
+
+.ranking-row:hover,
+.ranking-row:focus-visible {
+  background: #eef4f7;
+}
+
+.ranking-position {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.ranking-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ranking-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+}
+
+.ranking-empty {
+  margin: 6px 0 2px;
 }
 
 .section-heading-row {
@@ -1243,6 +1358,10 @@ th {
 
   .analysis-toggle {
     grid-template-columns: 1fr 48px auto;
+  }
+
+  .ranking-grid {
+    grid-template-columns: 1fr;
   }
 
   .situation-memo {

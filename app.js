@@ -1730,11 +1730,6 @@ function homeHtml() {
       <section class="section span-8">
         <h2>ホーム</h2>
         <p class="muted">選手、試合、打順、投手を登録して、1球ごとの内容と打席結果を記録できます。集計は自チームの攻撃と守備を分けて表示します。</p>
-        <div class="score-line">
-          <span>選手 ${state.players.length}名</span>
-          <span>試合 ${state.games.length}件</span>
-          <span>投球 ${state.pitches.length}球</span>
-        </div>
       </section>
       <section class="section span-4">
         <h3>最近の試合</h3>
@@ -1753,9 +1748,77 @@ function homeHtml() {
         </div>
         <button class="secondary history-button" data-screen="gameHistory">すべての試合を見る</button>
       </section>
+      ${homeBattingRankingsHtml()}
       ${countBattingAverageHtml()}
     </div>
   `;
+}
+
+function homeBattingRankingsHtml() {
+  const rankings = homeBattingRankings();
+  const cards = [
+    ["打率ランキング", rankings.avg, (row) => formatRate(row.stats.avg)],
+    ["安打数ランキング", rankings.hits, (row) => `${row.stats.hits}本`],
+    ["打点ランキング", rankings.rbi, (row) => `${row.stats.rbi}打点`],
+    ["OPSランキング", rankings.ops, (row) => formatRate(row.stats.ops)],
+  ];
+  return `
+    <section class="section span-12 home-rankings-section">
+      <div class="section-heading-row">
+        <div>
+          <h2>打撃ランキング</h2>
+          <p class="muted">保存済みの対外試合を対象に、個人通算打撃成績から算出しています。</p>
+        </div>
+      </div>
+      <div class="ranking-grid">
+        ${cards.map(([title, rows, formatValue]) => rankingCardHtml(title, rows, formatValue)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function rankingCardHtml(title, rows, formatValue) {
+  return `
+    <article class="ranking-card">
+      <h3>${title}</h3>
+      <div class="ranking-list">
+        ${rows.length ? rows.map((row, index) => `
+          <button class="ranking-row" type="button" data-player-detail="${escapeAttr(row.player.id)}">
+            <span class="ranking-position">${index + 1}位</span>
+            <strong>${escapeHtml(row.player.name)}</strong>
+            <span class="ranking-value">${formatValue(row)}</span>
+          </button>
+        `).join("") : `<p class="muted ranking-empty">対象となる打撃成績がありません。</p>`}
+      </div>
+    </article>
+  `;
+}
+
+function homeBattingRankings(options = {}) {
+  const minimumPlateAppearances = Math.max(0, Number(options.minimumPlateAppearances || 0));
+  const externalGameIds = new Set(state.games
+    .filter((game) => !game.sessionType || game.sessionType === "EXTERNAL_GAME")
+    .map((game) => game.id));
+  const rows = state.players.map((player) => ({
+    player,
+    stats: playerCareerBatting(player.id, externalGameIds),
+  })).filter((row) => row.stats.pa > 0 && row.stats.pa >= minimumPlateAppearances);
+  const rank = (metric, eligibility = () => true) => rows
+    .filter(eligibility)
+    .sort((a, b) => {
+      const metricDifference = Number(b.stats[metric] || 0) - Number(a.stats[metric] || 0);
+      if (metricDifference) return metricDifference;
+      const hitDifference = b.stats.hits - a.stats.hits;
+      if (hitDifference) return hitDifference;
+      return a.player.name.localeCompare(b.player.name, "ja");
+    })
+    .slice(0, 5);
+  return {
+    avg: rank("avg", (row) => row.stats.ab > 0),
+    hits: rank("hits"),
+    rbi: rank("rbi"),
+    ops: rank("ops", (row) => row.stats.ab > 0 && row.stats.ops !== null),
+  };
 }
 
 function gameHistoryHtml() {
@@ -1930,7 +1993,7 @@ function newGameHtml() {
   const canCreate = state.players.length >= 9;
   return `
     <div class="grid">
-      <section class="section span-8">
+      <section class="section span-12 new-game-section">
         <h2>試合作成</h2>
         ${canCreate ? "" : `<p class="notice">打順登録には選手が9名以上必要です。先に選手管理で登録してください。</p>`}
         <form id="gameForm" class="form-stack">
@@ -1954,11 +2017,11 @@ function newGameHtml() {
             <input name="opponentStartingPitcherName" placeholder="例：佐藤">
           </label>
           <h3>打順登録</h3>
-          <div class="lineup-grid">
+          <div class="starting-lineup-list">
             ${Array.from({ length: 9 }, (_, index) => `
-              <label>
-                ${index + 1}番
-                <select name="starter${index + 1}">${playerOptions()}</select>
+              <label class="starting-lineup-row">
+                <span>${index + 1}番</span>
+                <select name="starter${index + 1}" aria-label="${index + 1}番打者">${playerOptions()}</select>
               </label>
             `).join("")}
           </div>
@@ -1973,24 +2036,6 @@ function newGameHtml() {
           </div>
           <button class="primary" type="submit" ${canCreate ? "" : "disabled"}>試合開始</button>
         </form>
-      </section>
-      <section class="section span-4">
-        <h2>試合一覧</h2>
-        <div class="list">
-          ${state.games.map((game) => `
-            <div class="list-item">
-              <div>
-                <strong>${escapeHtml(game.name)}</strong><br>
-                <span class="muted">${gameProgressLabel(game)} / ${game.battingOrder === "top" ? "自チーム先攻" : "自チーム後攻"} / 自 ${game.selfScore} - 相 ${game.opponentScore}</span><br>
-                <span class="muted">先発 ${playerName(game.startingPitcherId, "未設定")}</span>
-                ${game.endedAt ? `<br><span class="muted">終了 ${escapeHtml(new Date(game.endedAt).toLocaleString("ja-JP"))}</span>` : ""}
-              </div>
-              ${isGameEnded(game)
-                ? `<button class="secondary" data-open-game-screen="live" data-game-id="${escapeAttr(game.id)}">閲覧</button>`
-                : `<button class="primary" data-resume-game="${escapeAttr(game.id)}">試合入力を再開</button>`}
-            </div>
-          `).join("") || `<p class="muted">まだ試合がありません。</p>`}
-        </div>
       </section>
     </div>
   `;
@@ -2093,7 +2138,7 @@ function liveHtml() {
         <div class="actions">
           <button class="primary" data-screen="timeline">速報を見る</button>
           <button class="secondary" data-screen="stats">集計を見る</button>
-          <button class="secondary" data-screen="newGame">試合一覧へ</button>
+          <button class="secondary" data-screen="gameHistory">試合履歴へ</button>
         </div>
       </section>
       ` : `
@@ -2463,12 +2508,17 @@ function timelineHtml() {
     return byTime || b.order - a.order;
   });
   return `
-    <section class="section">
-      <h2>速報タイムライン</h2>
-      <div class="plate-timeline">
-        ${items.map((entry) => entry.kind === "plate" ? plateAppearanceCard(entry.item, game) : entry.kind === "event" ? gameEventTimeline(entry.item) : substitutionTimeline(entry.item)).join("") || `<p class="muted">まだ記録がありません。</p>`}
-      </div>
-    </section>
+    <div class="grid timeline-page">
+      <section class="scoreboard-panel span-12">
+        ${runningScoreHtml(game)}
+      </section>
+      <section class="section span-12">
+        <h2>速報タイムライン</h2>
+        <div class="plate-timeline">
+          ${items.map((entry) => entry.kind === "plate" ? plateAppearanceCard(entry.item, game) : entry.kind === "event" ? gameEventTimeline(entry.item) : substitutionTimeline(entry.item)).join("") || `<p class="muted">まだ記録がありません。</p>`}
+        </div>
+      </section>
+    </div>
   `;
 }
 
