@@ -215,6 +215,15 @@ select {
   margin-top: 12px;
 }
 
+.stats-subtabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+}
+
+.stats-subtabs button {
+  min-height: 48px;
+}
+
 .analysis-settings {
   display: flex;
   align-items: center;
@@ -605,6 +614,35 @@ select {
 
 .table-wrap {
   overflow-x: auto;
+}
+
+.pitch-analysis-table th,
+.pitch-analysis-table td {
+  text-align: center;
+}
+
+.pitch-analysis-table th:first-child,
+.pitch-analysis-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  text-align: left;
+  background: #fff;
+}
+
+.pitch-analysis-table thead th:first-child,
+.pitch-analysis-table .total-row td:first-child {
+  background: #eef4f7;
+}
+
+.pitch-analysis-table .total-row td {
+  background: #eef4f7;
+  font-weight: 800;
+}
+
+.metric-footnote {
+  margin-bottom: 0;
+  font-size: 12px;
 }
 
 table {
@@ -1197,6 +1235,10 @@ th {
   .analysis-settings {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .stats-subtabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .analysis-toggle {

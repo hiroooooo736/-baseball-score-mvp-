@@ -15,6 +15,13 @@ const pitchTypeGroups = {
   UNKNOWN: "未記録",
 };
 
+const statsTabs = new Set([
+  "batting",
+  "battingPitchType",
+  "pitching",
+  "pitchingPitchType",
+]);
+
 const battingCountKeys = [
   "0-0", "0-1", "0-2",
   "1-0", "1-1", "1-2",
@@ -167,7 +174,7 @@ function migrateState(source) {
   migrated.gameEvents = migrated.gameEvents || [];
   migrated.undoStack = migrated.undoStack || [];
   migrated.gameActionHistory = migrated.gameActionHistory || [];
-  migrated.statsTab = migrated.statsTab || "batting";
+  migrated.statsTab = statsTabs.has(migrated.statsTab) ? migrated.statsTab : "batting";
   migrated.playerEditorOpen = false;
   migrated.playerDetailId = migrated.playerDetailId || null;
   migrated.selectedPitchTypeGroup = pitchTypeGroups[migrated.selectedPitchTypeGroup] ? migrated.selectedPitchTypeGroup : "FASTBALL";
@@ -1065,6 +1072,7 @@ function resetDemoData() {
 }
 
 function setStatsTab(tabName) {
+  if (!statsTabs.has(tabName)) return;
   setState((prev) => ({ ...prev, statsTab: tabName }));
 }
 
@@ -1862,6 +1870,8 @@ function playerDetailHtml() {
   if (!player) return `<section class="section"><h2>選手詳細</h2><p class="notice">選手が見つかりません。</p><button class="secondary" data-screen="players">選手管理へ戻る</button></section>`;
   const batting = playerCareerBatting(player.id);
   const pitching = playerCareerPitching(player.id);
+  const battingPitchTypes = playerCareerBattingPitchTypes(player.id);
+  const pitchingPitchTypes = playerCareerPitchingPitchTypes(player.id);
   return `
     <div class="grid player-detail-page">
       <section class="section span-12 player-profile-header">
@@ -1886,6 +1896,11 @@ function playerDetailHtml() {
         ])}
       </section>
       <section class="section span-12">
+        <h3>球種別 通算打撃分析</h3>
+        <p class="muted">打率は打席結果球、コンタクト率は1球ごとのスイング記録を球種別に集計しています。</p>
+        ${battingPitchTypeComparisonHtml(battingPitchTypes)}
+      </section>
+      <section class="section span-12">
         <h3>通算投手成績</h3>
         ${pitching.appearances ? careerStatsGridHtml([
           ["登板数", pitching.appearances], ["投球回", pitching.innings], ["対戦打者数", pitching.batters], ["投球数", pitching.pitchCount],
@@ -1893,6 +1908,11 @@ function playerDetailHtml() {
           ["死球", pitching.hbp], ["失点", pitching.runs], ["自責点", pitching.earnedRuns],
           ["ストライク率", formatPercent(pitching.strikeRate)], ["初球ストライク率", formatPercent(pitching.firstPitchStrikeRate)],
         ]) : `<p class="empty-career-message">投手成績なし</p>`}
+      </section>
+      <section class="section span-12">
+        <h3>球種別 通算投球分析</h3>
+        <p class="muted">球種が記録されている投球だけを対象に、既存のストライク判定で集計しています。</p>
+        ${pitchingPitchTypeComparisonHtml(pitchingPitchTypes)}
       </section>
     </div>
   `;
@@ -2579,13 +2599,15 @@ function statsHtml() {
       <section class="section span-12">
         <h2>集計</h2>
         <div class="score-line"><span>自チーム ${game.selfScore}</span><span>相手 ${game.opponentScore}</span><span>${game.inning}回${halfLabel(game.half)}</span></div>
-        <div class="subtabs">
-          <button class="${state.statsTab === "batting" ? "primary" : "secondary"}" data-stats-tab="batting">打撃集計</button>
-          <button class="${state.statsTab === "pitching" ? "primary" : "secondary"}" data-stats-tab="pitching">投手集計</button>
+        <div class="subtabs stats-subtabs" role="tablist" aria-label="集計の切り替え">
+          <button class="${state.statsTab === "batting" ? "primary" : "secondary"}" data-stats-tab="batting" role="tab" aria-selected="${state.statsTab === "batting"}">打撃集計①</button>
+          <button class="${state.statsTab === "battingPitchType" ? "primary" : "secondary"}" data-stats-tab="battingPitchType" role="tab" aria-selected="${state.statsTab === "battingPitchType"}">打撃集計②</button>
+          <button class="${state.statsTab === "pitching" ? "primary" : "secondary"}" data-stats-tab="pitching" role="tab" aria-selected="${state.statsTab === "pitching"}">投球集計①</button>
+          <button class="${state.statsTab === "pitchingPitchType" ? "primary" : "secondary"}" data-stats-tab="pitchingPitchType" role="tab" aria-selected="${state.statsTab === "pitchingPitchType"}">投球集計②</button>
         </div>
         ${analysisSettingsHtml(game)}
       </section>
-      ${state.statsTab === "pitching" ? pitchingStatsHtml(game) : battingStatsHtml(game)}
+      ${statsTabContentHtml(game)}
       <section class="section span-12">
         <h3>管理</h3>
         <div class="actions">
@@ -2600,6 +2622,13 @@ function statsHtml() {
       </section>
     </div>
   `;
+}
+
+function statsTabContentHtml(game) {
+  if (state.statsTab === "battingPitchType") return battingPitchTypeStatsHtml(game);
+  if (state.statsTab === "pitching") return pitchingStatsHtml(game);
+  if (state.statsTab === "pitchingPitchType") return pitchingPitchTypeStatsHtml(game);
+  return battingStatsHtml(game);
 }
 
 function analysisSettingsHtml(game) {
@@ -2643,6 +2672,55 @@ function battingStatsHtml(game) {
       </div>
     </section>
     ${outRatioHtml(game)}
+  `;
+}
+
+function battingPitchTypeStatsHtml(game) {
+  const rows = battingPitchTypeRows(game);
+  const team = selfTeamBattingPitchTypeRow(game);
+  return `
+    <section class="section span-12">
+      <h3>自チーム 球種別打撃成績</h3>
+      <p class="muted">打率は打席を終了した最終球の球種で分類します。Contact%は球種ごとのコンタクト数 ÷ スイング数です。未記録球は含みません。</p>
+      <div class="table-wrap pitch-analysis-table">
+        <table>
+          <thead><tr><th>選手</th><th>直球打率</th><th>変化球打率</th><th>直球Contact%</th><th>変化球Contact%</th></tr></thead>
+          <tbody>
+            ${rows.map((row) => battingPitchTypeRowHtml(row)).join("")}
+            ${battingPitchTypeRowHtml(team, "total-row")}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted metric-footnote">打率の括弧内は安打/打数、Contact%の括弧内はコンタクト数/スイング数です。</p>
+    </section>
+  `;
+}
+
+function battingPitchTypeRowHtml(row, className = "") {
+  return `<tr class="${className}">
+    <td>${escapeHtml(row.name)}</td>
+    <td>${formatRateFraction(row.FASTBALL.avg, row.FASTBALL.hits, row.FASTBALL.atBats)}</td>
+    <td>${formatRateFraction(row.BREAKING.avg, row.BREAKING.hits, row.BREAKING.atBats)}</td>
+    <td>${formatPercentFraction(row.FASTBALL.contactRate, row.FASTBALL.contacts, row.FASTBALL.swings)}</td>
+    <td>${formatPercentFraction(row.BREAKING.contactRate, row.BREAKING.contacts, row.BREAKING.swings)}</td>
+  </tr>`;
+}
+
+function battingPitchTypeComparisonHtml(summary) {
+  return `
+    <div class="table-wrap pitch-analysis-table">
+      <table>
+        <thead><tr><th>指標</th><th>ストレート</th><th>変化球</th></tr></thead>
+        <tbody>
+          <tr><td>打数</td><td>${summary.FASTBALL.atBats}</td><td>${summary.BREAKING.atBats}</td></tr>
+          <tr><td>安打</td><td>${summary.FASTBALL.hits}</td><td>${summary.BREAKING.hits}</td></tr>
+          <tr><td>打率</td><td>${formatRate(summary.FASTBALL.avg)}</td><td>${formatRate(summary.BREAKING.avg)}</td></tr>
+          <tr><td>スイング数</td><td>${summary.FASTBALL.swings}</td><td>${summary.BREAKING.swings}</td></tr>
+          <tr><td>コンタクト数</td><td>${summary.FASTBALL.contacts}</td><td>${summary.BREAKING.contacts}</td></tr>
+          <tr><td>コンタクト率</td><td>${formatPercentFraction(summary.FASTBALL.contactRate, summary.FASTBALL.contacts, summary.FASTBALL.swings)}</td><td>${formatPercentFraction(summary.BREAKING.contactRate, summary.BREAKING.contacts, summary.BREAKING.swings)}</td></tr>
+        </tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -2792,20 +2870,76 @@ function pitchingStatsHtml(game) {
   `;
 }
 
+function pitchingPitchTypeStatsHtml(game) {
+  const rows = pitchingPitchTypeRows(game);
+  const team = selfTeamPitchingPitchTypeRow(game, rows);
+  return `
+    <section class="section span-12">
+      <h3>自チーム 球種別投球成績</h3>
+      <p class="muted">打席途中を含む保存済みの全投球を反映します。見逃し、空振り、ファール、四死球以外の結果球をストライクとして扱います。</p>
+      <div class="table-wrap pitch-analysis-table">
+        <table>
+          <thead><tr><th>投手</th><th>直球投球数</th><th>直球ストライク率</th><th>変化球投球数</th><th>変化球ストライク率</th></tr></thead>
+          <tbody>
+            ${rows.map((row) => pitchingPitchTypeRowHtml(row)).join("")}
+            ${pitchingPitchTypeRowHtml(team, "total-row")}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted metric-footnote">ストライク率の括弧内はストライク数/投球数です。球種未記録の投球は含みません。</p>
+    </section>
+  `;
+}
+
+function pitchingPitchTypeRowHtml(row, className = "") {
+  return `<tr class="${className}">
+    <td>${escapeHtml(row.name)}</td>
+    <td>${row.FASTBALL.pitchCount}</td>
+    <td>${formatPercentFraction(row.FASTBALL.strikeRate, row.FASTBALL.strikes, row.FASTBALL.pitchCount)}</td>
+    <td>${row.BREAKING.pitchCount}</td>
+    <td>${formatPercentFraction(row.BREAKING.strikeRate, row.BREAKING.strikes, row.BREAKING.pitchCount)}</td>
+  </tr>`;
+}
+
+function pitchingPitchTypeComparisonHtml(summary) {
+  return `
+    <div class="table-wrap pitch-analysis-table">
+      <table>
+        <thead><tr><th>指標</th><th>ストレート</th><th>変化球</th></tr></thead>
+        <tbody>
+          <tr><td>投球数</td><td>${summary.FASTBALL.pitchCount}</td><td>${summary.BREAKING.pitchCount}</td></tr>
+          <tr><td>ストライク数</td><td>${summary.FASTBALL.strikes}</td><td>${summary.BREAKING.strikes}</td></tr>
+          <tr><td>ストライク率</td><td>${formatPercentFraction(summary.FASTBALL.strikeRate, summary.FASTBALL.strikes, summary.FASTBALL.pitchCount)}</td><td>${formatPercentFraction(summary.BREAKING.strikeRate, summary.BREAKING.strikes, summary.BREAKING.pitchCount)}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function battingRowHtml(row, className = "") {
   return `<tr class="${className}"><td>${escapeHtml(row.name)}</td><td>${row.pa}</td><td>${row.ab}</td><td>${row.hits}</td><td>${row.single}</td><td>${row.double}</td><td>${row.triple}</td><td>${row.homerun}</td><td>${row.strikeouts}</td><td>${row.walks}</td><td>${row.hbp}</td><td>${row.sacrifice}</td><td>${row.doubleplay}</td><td>${row.errorReach}</td><td>${row.steals}</td><td>${row.caughtStealing}</td><td>${row.rbi}</td><td>${row.runs}</td><td>${formatRate(row.avg)}</td><td>${formatRate(row.obp)}</td><td>${formatRate(row.slg)}</td><td>${formatRate(row.ops)}</td><td>${formatPercent(row.contactRate)}</td></tr>`;
 }
 
 function battingRows(game) {
-  const lineupPlayerIds = lineupsForGame(game.id).filter((lineup) => lineup.isStarter || lineup.isBench).map((lineup) => lineup.playerId);
-  const eventPlayerIds = state.gameEvents.filter((event) => event.gameId === game.id && event.battingTeamType === "self").map((event) => event.relatedPlayerId).filter(Boolean);
-  const ids = [...new Set([...lineupPlayerIds, ...state.battingResults.filter((result) => result.gameId === game.id && result.battingTeamType === "self").map((result) => result.batterId).filter(Boolean), ...eventPlayerIds])];
-  return ids.map((playerId) => {
+  return battingPlayerIdsForGame(game).map((playerId) => {
     const results = state.battingResults.filter((result) => result.gameId === game.id && result.battingTeamType === "self" && result.batterId === playerId);
     const events = state.gameEvents.filter((event) => event.gameId === game.id && event.battingTeamType === "self" && event.relatedPlayerId === playerId);
     const pitches = battingPitches(new Set([game.id]), "self", playerId);
     return buildBattingSummary(playerName(playerId, "未設定"), results, events, pitches);
   });
+}
+
+function battingPlayerIdsForGame(game) {
+  const lineupPlayerIds = lineupsForGame(game.id).filter((lineup) => lineup.isStarter || lineup.isBench).map((lineup) => lineup.playerId);
+  const eventPlayerIds = state.gameEvents.filter((event) => event.gameId === game.id && event.battingTeamType === "self").map((event) => event.relatedPlayerId).filter(Boolean);
+  return [...new Set([
+    ...lineupPlayerIds,
+    ...state.battingResults
+      .filter((result) => result.gameId === game.id && result.battingTeamType === "self")
+      .map((result) => result.batterId)
+      .filter(Boolean),
+    ...eventPlayerIds,
+  ])];
 }
 
 function selfTeamBattingRow(game) {
@@ -2814,6 +2948,43 @@ function selfTeamBattingRow(game) {
   const events = state.gameEvents.filter((event) => event.gameId === game.id && event.battingTeamType === "self");
   const pitches = battingPitches(gameIds, "self");
   return buildBattingSummary("チーム合計", results, events, pitches);
+}
+
+function battingPitchTypeRows(game) {
+  const gameIds = new Set([game.id]);
+  const playerIds = [...new Set([
+    ...state.plateAppearances
+      .filter((pa) => pa.gameId === game.id && pa.battingTeamType === "self")
+      .map((pa) => pa.batterId || pa.playerId)
+      .filter(Boolean),
+    ...state.battingResults
+      .filter((result) => result.gameId === game.id && result.battingTeamType === "self")
+      .map((result) => result.batterId)
+      .filter(Boolean),
+  ])];
+  return playerIds.map((playerId) => {
+    const pitches = battingPitches(gameIds, "self", playerId);
+    const results = state.battingResults.filter((result) => (
+      result.gameId === game.id
+      && result.battingTeamType === "self"
+      && result.batterId === playerId
+    ));
+    return {
+      name: playerName(playerId, "未設定"),
+      playerId,
+      ...buildBattingPitchTypeSummary(pitches, results),
+    };
+  });
+}
+
+function selfTeamBattingPitchTypeRow(game) {
+  const gameIds = new Set([game.id]);
+  const pitches = battingPitches(gameIds, "self");
+  const results = state.battingResults.filter((result) => result.gameId === game.id && result.battingTeamType === "self");
+  return {
+    name: "チーム合計",
+    ...buildBattingPitchTypeSummary(pitches, results),
+  };
 }
 
 function statsGameIdSet(gameIds = null) {
@@ -2857,6 +3028,17 @@ function playerCareerBatting(playerId, gameIds = null) {
     ...buildBattingSummary(playerName(playerId, "未設定"), results, events, pitches),
     games: appearanceGameIds.size,
   };
+}
+
+function playerCareerBattingPitchTypes(playerId, gameIds = null) {
+  const targetGameIds = statsGameIdSet(gameIds);
+  const pitches = battingPitches(targetGameIds, "self", playerId);
+  const results = state.battingResults.filter((result) => (
+    targetGameIds.has(result.gameId)
+    && result.battingTeamType === "self"
+    && result.batterId === playerId
+  ));
+  return buildBattingPitchTypeSummary(pitches, results);
 }
 
 function opponentBattingRow(game) {
@@ -2915,6 +3097,82 @@ function battingPitches(gameIds, battingTeamType, batterId = null) {
     ))
     .map((pa) => pa.id));
   return state.pitches.filter((pitch) => gameIds.has(pitch.gameId) && plateAppearanceIds.has(pitch.plateAppearanceId));
+}
+
+function buildBattingPitchTypeSummary(pitches, results) {
+  const summary = createEmptyBattingPitchTypeSummary();
+  const terminalPitchByPlateAppearance = new Map();
+  for (const pitch of pitches) {
+    if (pitch.plateAppearanceId) terminalPitchByPlateAppearance.set(pitch.plateAppearanceId, pitch);
+  }
+
+  for (const result of results) {
+    if (!resultTypes[result.type]?.ab) continue;
+    const terminalPitch = terminalPitchByPlateAppearance.get(result.plateAppearanceId);
+    const group = recordedPitchTypeGroup(terminalPitch);
+    if (!group) continue;
+    summary[group].atBats += 1;
+    if (resultTypes[result.type]?.hit) summary[group].hits += 1;
+  }
+
+  for (const group of ["FASTBALL", "BREAKING"]) {
+    const contact = battingContactSummaryByPitchType(pitches, results, group);
+    summary[group].avg = summary[group].atBats ? summary[group].hits / summary[group].atBats : null;
+    summary[group].swings = contact.swings;
+    summary[group].contacts = contact.contacts;
+    summary[group].contactRate = contact.contactRate;
+  }
+  return summary;
+}
+
+function createEmptyBattingPitchTypeSummary() {
+  return {
+    FASTBALL: { atBats: 0, hits: 0, avg: null, swings: 0, contacts: 0, contactRate: null },
+    BREAKING: { atBats: 0, hits: 0, avg: null, swings: 0, contacts: 0, contactRate: null },
+  };
+}
+
+function battingContactSummaryByPitchType(pitches, results, group) {
+  const resultTypeByPlateAppearance = new Map(results
+    .filter((result) => result.plateAppearanceId)
+    .map((result) => [result.plateAppearanceId, result.type]));
+  const resultPitchPlateAppearances = new Set(pitches
+    .filter((pitch) => pitch.type === "result" && pitch.plateAppearanceId)
+    .map((pitch) => pitch.plateAppearanceId));
+  let swings = 0;
+  let contacts = 0;
+
+  for (const pitch of pitches) {
+    if (recordedPitchTypeGroup(pitch) !== group) continue;
+    if (["swinging", "swinging_strike", "swingingStrike"].includes(pitch.type)) {
+      swings += 1;
+      continue;
+    }
+    if (["foul", "foul_ball"].includes(pitch.type)) {
+      swings += 1;
+      contacts += 1;
+      continue;
+    }
+    if (pitch.type === "inplay") {
+      if (pitch.plateAppearanceId && resultPitchPlateAppearances.has(pitch.plateAppearanceId)) continue;
+      swings += 1;
+      contacts += 1;
+      continue;
+    }
+    if (pitch.type !== "result") continue;
+    const resultType = pitch.resultType || resultTypeByPlateAppearance.get(pitch.plateAppearanceId);
+    if (!isContactResultType(resultType)) continue;
+    swings += 1;
+    contacts += 1;
+  }
+
+  return { swings, contacts, contactRate: swings ? contacts / swings : null };
+}
+
+function recordedPitchTypeGroup(pitch) {
+  return pitch && ["FASTBALL", "BREAKING"].includes(pitch.pitchTypeGroup)
+    ? pitch.pitchTypeGroup
+    : null;
 }
 
 function battingContactSummary(pitches, results = []) {
@@ -3001,6 +3259,28 @@ function pitchingRows(game) {
     .map((row, index) => ({ ...row, appearanceOrder: index + 1 }));
 }
 
+function pitchingPitchTypeRows(game) {
+  return pitchingRows(game)
+    .filter((row) => state.pitches.some((pitch) => pitch.gameId === game.id && pitch.pitcherId === row.pitcherId))
+    .map((row) => {
+      const pitches = state.pitches.filter((pitch) => pitch.gameId === game.id && pitch.pitcherId === row.pitcherId);
+      return {
+        name: row.name,
+        pitcherId: row.pitcherId,
+        ...buildPitchingPitchTypeSummary(pitches),
+      };
+    });
+}
+
+function selfTeamPitchingPitchTypeRow(game, rows = pitchingPitchTypeRows(game)) {
+  const pitcherIds = new Set(rows.map((row) => row.pitcherId));
+  const pitches = state.pitches.filter((pitch) => pitch.gameId === game.id && pitcherIds.has(pitch.pitcherId));
+  return {
+    name: "投手合計",
+    ...buildPitchingPitchTypeSummary(pitches),
+  };
+}
+
 function playerCareerPitching(playerId, gameIds = null) {
   const targetGameIds = statsGameIdSet(gameIds);
   const pitches = state.pitches.filter((pitch) => targetGameIds.has(pitch.gameId) && pitch.pitcherId === playerId);
@@ -3038,6 +3318,12 @@ function playerCareerPitching(playerId, gameIds = null) {
     ...buildPitchingSummary(playerName(playerId, "未設定"), pitches, results, events, plateAppearances),
     appearances: appearanceGameIds.size,
   };
+}
+
+function playerCareerPitchingPitchTypes(playerId, gameIds = null) {
+  const targetGameIds = statsGameIdSet(gameIds);
+  const pitches = state.pitches.filter((pitch) => targetGameIds.has(pitch.gameId) && pitch.pitcherId === playerId);
+  return buildPitchingPitchTypeSummary(pitches);
 }
 
 function opponentPitchingRow(game) {
@@ -3081,6 +3367,24 @@ function buildPitchingSummary(name, pitches, results, events, plateAppearances) 
     runs: sum(results, "runs") + sum(events, "runsAdded"),
     earnedRuns: sum(results, "earnedRuns"),
   };
+}
+
+function buildPitchingPitchTypeSummary(pitches) {
+  const summary = {
+    FASTBALL: { pitchCount: 0, strikes: 0, strikeRate: null },
+    BREAKING: { pitchCount: 0, strikes: 0, strikeRate: null },
+  };
+  for (const pitch of pitches) {
+    const group = recordedPitchTypeGroup(pitch);
+    if (!group) continue;
+    summary[group].pitchCount += 1;
+    if (isStrikePitch(pitch)) summary[group].strikes += 1;
+  }
+  for (const group of ["FASTBALL", "BREAKING"]) {
+    const bucket = summary[group];
+    bucket.strikeRate = bucket.pitchCount ? bucket.strikes / bucket.pitchCount : null;
+  }
+  return summary;
 }
 
 function pitcherAppearanceMeta(game, pitcherId, pitches) {
@@ -3147,6 +3451,14 @@ function formatPercent(value) {
   const numericValue = Number(value);
   if (value === null || value === undefined || !Number.isFinite(numericValue)) return "-";
   return `${(numericValue * 100).toFixed(1)}%`;
+}
+
+function formatRateFraction(value, numerator, denominator) {
+  return denominator ? `${formatRate(value)}（${numerator}/${denominator}）` : "-";
+}
+
+function formatPercentFraction(value, numerator, denominator) {
+  return denominator ? `${formatPercent(value)}（${numerator}/${denominator}）` : "-";
 }
 
 function setFieldLocation(location) {
